@@ -18,6 +18,7 @@ minimax-tui
 On first launch, `minimax-tui` will open the interactive setup flow if `~/.minimax-tui/setting.json` does not yet have an API key.
 Every launch starts a new conversation session. Use `/resume` inside the TUI to open a session picker, or `/resume <session-id>` to jump directly to a saved session.
 `/mode agent` switches the chat loop into tool-using agent mode.
+In agent mode, the model can inspect files, edit files, and run non-interactive workspace commands.
 
 ### Config
 
@@ -69,6 +70,7 @@ Install and manage local skills:
 ```bash
 minimax-tui skills list
 minimax-tui skills install ./path/to/skill
+minimax-tui skills install https://github.com/user/repo
 minimax-tui skills remove skill-name
 ```
 
@@ -78,6 +80,7 @@ Inside the TUI:
 /skill
 /skill list
 /skill install ./path/to/skill
+/skill install https://github.com/user/repo
 /skill use skill-name
 /skill remove skill-name
 ```

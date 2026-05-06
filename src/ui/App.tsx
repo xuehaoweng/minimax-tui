@@ -779,7 +779,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
               `Installed skills: ${installedSkills.length}`,
               installed,
               `Active skills: ${activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ")}`,
-              "Use /skill install <path>, /skill use <name>, /skill remove <name>, /skill active.",
+              "Use /skill install <path-or-github-url>, /skill use <name>, /skill remove <name>, /skill active.",
             ].join("\n"),
           );
           return;
@@ -800,7 +800,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
         if (subcommand === "install") {
           if (!skillArg) {
-            setError("Usage: /skill install <path>");
+            setError("Usage: /skill install <path-or-github-url>");
             setStatus("Command error");
             return;
           }
@@ -849,7 +849,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           return;
         }
 
-        setError("Usage: /skill [list|active|install <path>|use <name>|remove <name>]");
+        setError("Usage: /skill [list|active|install <path-or-github-url>|use <name>|remove <name>]");
         setStatus("Command error");
         return;
       }
@@ -1463,7 +1463,11 @@ function getModePrompt(mode: AppConfig["mode"]): string {
     case "plan":
       return "Mode: plan. Focus on clarifying requirements, outlining steps, and avoiding premature implementation.";
     case "agent":
-      return "Mode: agent. Be concise, action-oriented, and treat the conversation like an execution workspace.";
+      return [
+        "Mode: agent. Be concise, action-oriented, and treat the conversation like an execution workspace.",
+        "You can inspect files, edit files, and run non-interactive workspace commands with tools.",
+        "Prefer the smallest useful command, avoid destructive actions unless clearly requested, and report what changed.",
+      ].join(" ");
     case "chat":
     default:
       return "Mode: chat. Provide direct conversational answers.";

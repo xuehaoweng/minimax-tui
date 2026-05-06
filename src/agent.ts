@@ -1,8 +1,12 @@
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 import { createChatCompletion } from "./api/minimax.js";
 import type { AppConfig, ChatMessage, ToolCall } from "./types.js";
 import type { SkillManifest } from "./types.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface AgentTurnResult {
   messages: ChatMessage[];
@@ -120,6 +124,30 @@ function getToolDefinitions(): Array<Record<string, unknown>> {
         },
       },
     },
+    {
+      type: "function",
+      function: {
+        name: "run_command",
+        description: "Run a non-interactive shell command in the workspace.",
+        parameters: {
+          type: "object",
+          properties: {
+            command: { type: "string", description: "Command to execute." },
+            args: {
+              type: "array",
+              items: { type: "string" },
+              description: "Command arguments.",
+            },
+            cwd: { type: "string", description: "Workspace-relative working directory." },
+            timeout_ms: {
+              type: "number",
+              description: "Timeout in milliseconds.",
+            },
+          },
+          required: ["command"],
+        },
+      },
+    },
   ];
 }
 
@@ -145,6 +173,10 @@ async function executeToolCall(
     }
     case "write_file": {
       const result = await writeWorkspaceFile(toStringArg(args.path, "."), toStringArg(args.content, ""));
+      return makeToolMessage(call, result);
+    }
+    case "run_command": {
+      const result = await runCommandTool(args);
       return makeToolMessage(call, result);
     }
     default:
@@ -231,6 +263,89 @@ function toStringArg(value: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+async function runCommandTool(args: Record<string, unknown>): Promise<string> {
+  const command = toStringArg(args.command, "");
+  if (!command) {
+    throw new Error("Command is required.");
+  }
+
+  const commandArgs = Array.isArray(args.args)
+    ? args.args.map((value) => toStringArg(value, "")).filter((value) => value.length > 0)
+    : [];
+  const timeoutMs = typeof args.timeout_ms === "number" && Number.isFinite(args.timeout_ms) ? args.timeout_ms : 30_000;
+  const cwd = args.cwd ? resolveWorkspacePath(toStringArg(args.cwd, ".")) : process.cwd();
+  const shell = Boolean(args.shell);
+
+  try {
+    const { stdout, stderr } = await execFileAsync(command, commandArgs, {
+      cwd,
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024,
+      shell,
+    });
+    return formatCommandResult(command, commandArgs, cwd, 0, stdout, stderr);
+  } catch (cause) {
+    const error = cause as {
+      code?: number;
+      stdout?: string;
+      stderr?: string;
+      killed?: boolean;
+      message?: string;
+    };
+    return formatCommandResult(
+      command,
+      commandArgs,
+      cwd,
+      typeof error.code === "number" ? error.code : 1,
+      error.stdout ?? "",
+      `${error.stderr ?? ""}${error.message ? `\n${error.message}` : ""}`,
+      error.killed ? "Command timed out or was killed." : undefined,
+    );
+  }
+}
+
+function formatCommandResult(
+  command: string,
+  args: string[],
+  cwd: string,
+  exitCode: number,
+  stdout: string,
+  stderr: string,
+  note?: string,
+): string {
+  const lines = [
+    `Command: ${command}${args.length > 0 ? ` ${args.join(" ")}` : ""}`,
+    `CWD: ${cwd}`,
+    `Exit code: ${exitCode}`,
+  ];
+
+  if (note) {
+    lines.push(`Note: ${note}`);
+  }
+
+  if (stdout.trim().length > 0) {
+    lines.push("STDOUT:", limitText(stdout.trimEnd()));
+  }
+
+  if (stderr.trim().length > 0) {
+    lines.push("STDERR:", limitText(stderr.trimEnd()));
+  }
+
+  if (stdout.trim().length === 0 && stderr.trim().length === 0) {
+    lines.push("No output.");
+  }
+
+  return lines.join("\n");
+}
+
+function limitText(text: string, maxLength = 8000): string {
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength)}\n...[truncated ${text.length - maxLength} chars]`;
 }
 
 function makeToolMessage(call: ToolCall, output: string): { message: ChatMessage } {

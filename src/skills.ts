@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
+import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import type { SkillManifest, SkillSummary } from "./types.js";
+
+const execFileAsync = promisify(execFile);
 
 export function getSkillsDir(): string {
   return path.join(os.homedir(), ".minimax-tui", "skills");
@@ -34,14 +38,13 @@ export async function listInstalledSkills(): Promise<SkillSummary[]> {
 }
 
 export async function installSkillFromPath(sourcePath: string): Promise<SkillManifest> {
-  const resolved = path.resolve(sourcePath);
-  const stat = await fs.stat(resolved);
-  const skillRoot = stat.isDirectory() ? resolved : path.dirname(resolved);
-  const skillFile = await findSkillFile(skillRoot);
+  const resolved = await resolveSkillSource(sourcePath);
+  const skillFile = await findSkillFile(resolved.skillRoot);
   if (!skillFile) {
-    throw new Error(`SKILL.md not found in ${resolved}`);
+    throw new Error(`SKILL.md not found in ${sourcePath}`);
   }
 
+  const skillRoot = path.dirname(skillFile);
   const raw = await fs.readFile(skillFile, "utf8");
   const name = sanitizeSkillName(extractSkillName(raw) ?? path.basename(skillRoot));
   const destinationDir = path.join(getSkillsDir(), name);
@@ -50,7 +53,11 @@ export async function installSkillFromPath(sourcePath: string): Promise<SkillMan
   await fs.rm(destinationDir, { recursive: true, force: true });
   await copySkillTree(skillRoot, destinationDir);
 
-  return readInstalledSkill(name);
+  try {
+    return await readInstalledSkill(name);
+  } finally {
+    await resolved.cleanup();
+  }
 }
 
 export async function removeSkill(name: string): Promise<void> {
@@ -107,9 +114,126 @@ async function findSkillFile(rootDir: string): Promise<string | null> {
       return direct;
     }
   } catch {
+    // Fall through to recursive search.
+  }
+
+  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    if (entry.name === "node_modules" || entry.name === ".git") {
+      continue;
+    }
+
+    const nested = await findSkillFile(path.join(rootDir, entry.name));
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
+async function resolveSkillSource(source: string): Promise<{ skillRoot: string; cleanup: () => Promise<void> }> {
+  if (looksLikeGithubSource(source)) {
+    return cloneGithubSource(source);
+  }
+
+  const resolved = path.resolve(source);
+  const stat = await fs.stat(resolved);
+  const skillRoot = stat.isDirectory() ? resolved : path.dirname(resolved);
+  return {
+    skillRoot,
+    cleanup: async () => {
+      return;
+    },
+  };
+}
+
+async function cloneGithubSource(source: string): Promise<{ skillRoot: string; cleanup: () => Promise<void> }> {
+  const parsed = parseGithubSource(source);
+  if (!parsed) {
+    throw new Error(`Unsupported GitHub source: ${source}`);
+  }
+
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "minimax-tui-skill-"));
+  const cloneDir = path.join(tempRoot, "repo");
+  const cloneArgs = ["clone", "--depth", "1"];
+  if (parsed.branch) {
+    cloneArgs.push("--branch", parsed.branch);
+  }
+  cloneArgs.push(parsed.cloneUrl, cloneDir);
+
+  try {
+    await execFileAsync("git", cloneArgs, { maxBuffer: 1024 * 1024 });
+  } catch (cause) {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+    const message = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`Failed to clone GitHub repo: ${message}`);
+  }
+
+  const skillRoot = parsed.subdir ? path.join(cloneDir, parsed.subdir) : cloneDir;
+  return {
+    skillRoot,
+    cleanup: async () => {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+function looksLikeGithubSource(source: string): boolean {
+  return (
+    source.startsWith("github:") ||
+    source.startsWith("https://github.com/") ||
+    source.startsWith("http://github.com/") ||
+    source.startsWith("git@github.com:")
+  );
+}
+
+function parseGithubSource(source: string): { cloneUrl: string; branch?: string; subdir?: string } | null {
+  if (source.startsWith("git@github.com:")) {
+    return { cloneUrl: source };
+  }
+
+  const normalized = source.startsWith("github:")
+    ? `https://github.com/${source.slice("github:".length).replace(/^\/+/, "")}`
+    : source;
+
+  let url: URL;
+  try {
+    url = new URL(normalized);
+  } catch {
     return null;
   }
-  return null;
+
+  if (url.hostname !== "github.com") {
+    return null;
+  }
+
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const owner = segments[0];
+  const repo = stripGitSuffix(segments[1]);
+  let branch: string | undefined;
+  let subdir: string | undefined;
+
+  if (segments[2] === "tree" && segments.length >= 4) {
+    branch = segments[3];
+    const rest = segments.slice(4).join("/");
+    subdir = rest.length > 0 ? rest : undefined;
+  }
+
+  const cloneUrl = `https://github.com/${owner}/${repo}.git`;
+  return { cloneUrl, branch, subdir };
+}
+
+function stripGitSuffix(value: string): string {
+  return value.endsWith(".git") ? value.slice(0, -4) : value;
 }
 
 function extractSkillName(raw: string): string | null {
