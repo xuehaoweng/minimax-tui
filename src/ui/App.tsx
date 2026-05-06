@@ -31,6 +31,8 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   const [runtimeConfig, setRuntimeConfig] = useState<AppConfig>(config);
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
+  const [promptHistory, setPromptHistory] = useState<string[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -114,6 +116,16 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       return;
     }
 
+    if (key.ctrl && input === "p") {
+      recallPrompt(-1);
+      return;
+    }
+
+    if (key.ctrl && input === "n") {
+      recallPrompt(1);
+      return;
+    }
+
     if (isPaletteOpen) {
       if (key.escape) {
         setIsPaletteOpen(false);
@@ -161,6 +173,9 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     }
 
     if (input) {
+      if (historyCursor !== null) {
+        setHistoryCursor(null);
+      }
       setDraft((current) => `${current}${input}`);
     }
   });
@@ -205,6 +220,8 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     setNotice(null);
     setIsSending(true);
     setStatus(`Sending request in ${runtimeConfig.mode} mode...`);
+    setPromptHistory((current) => [...current, content]);
+    setHistoryCursor(null);
     setDraft("");
     setMessages((current) => {
       const next = [
@@ -386,6 +403,28 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     setNotice("Reloaded the last saved session from disk");
   }
 
+  function recallPrompt(direction: -1 | 1): void {
+    if (promptHistory.length === 0) {
+      return;
+    }
+
+    setHistoryCursor((current) => {
+      let nextIndex: number;
+      if (current === null) {
+        nextIndex = direction < 0 ? promptHistory.length - 1 : 0;
+      } else {
+        nextIndex = current + direction;
+      }
+
+      if (nextIndex < 0 || nextIndex >= promptHistory.length) {
+        return current;
+      }
+
+      setDraft(promptHistory[nextIndex] ?? "");
+      return nextIndex;
+    });
+  }
+
   async function applyMode(mode: AppConfig["mode"]): Promise<void> {
     const nextConfig = { ...runtimeConfig, mode };
     setRuntimeConfig(nextConfig);
@@ -404,7 +443,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
           Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | {status}
         </Text>
         <Text dimColor>
-          Enter to send, Shift+Enter for newline, /help for commands, Ctrl+C to exit
+          Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, /help for commands, Ctrl+C to exit
         </Text>
       </Box>
 
