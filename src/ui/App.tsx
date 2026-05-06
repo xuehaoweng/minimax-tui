@@ -1386,46 +1386,46 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       </Box>
 
       <Box marginBottom={1} borderStyle="double" borderColor="cyan">
-        <Box width={18} flexDirection="column" paddingX={1} paddingY={0}>
+        <Box width={20} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
-            MiniMax
-          </Text>
-          <Text color="cyanBright">
             ▐▛███▜▌
           </Text>
-          <Text color="cyanBright">
+          <Text color="cyanBright" bold>
             ▝▜█████▛▘
           </Text>
-          <Text color="cyanBright">
-            ▘▘ ▝▝
+          <Text color="cyanBright" bold>
+            ▐▛███▜▌
           </Text>
-          <Text dimColor>
-            TUI
+          <Text color="magentaBright" bold>
+            MINI MAX
+          </Text>
+          <Text color="magentaBright" bold>
+            T U I
           </Text>
         </Box>
         <Box flexGrow={1} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
             Welcome back!
           </Text>
-          <Text dimColor>
+          <Text color="white">
             Started: {launchTime}
           </Text>
-          <Text dimColor>
+          <Text color="white">
             Workspace: {process.cwd()}
           </Text>
-          <Text dimColor>
+          <Text color="white">
             Session: {sessionTitle} ({activeSession.id.slice(0, 8)})
           </Text>
-          <Text dimColor>
+          <Text color="white">
             Messages: {messages.length} | Status: {status}
           </Text>
-          <Text dimColor>
+          <Text color="white">
             Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model}
           </Text>
-          <Text dimColor>
+          <Text color="white">
             Active skills: {activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ")}
           </Text>
-          <Text dimColor>
+          <Text color="white">
             Active plugins: {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
           </Text>
         </Box>
@@ -1433,13 +1433,13 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           <Text color="yellowBright" bold>
             Tips
           </Text>
-          <Text dimColor>/status, /resume, /skill list, /plugin list</Text>
-          <Text dimColor>/skill install {"<path-or-github-url>"}</Text>
-          <Text dimColor>/plugin install {"<path-or-github-url>"}</Text>
+          <Text color="yellow">/status, /resume, /skill list, /plugin list</Text>
+          <Text color="yellow">/skill install {"<path-or-github-url>"}</Text>
+          <Text color="yellow">/plugin install {"<path-or-github-url>"}</Text>
           <Text color="greenBright" bold>
             Recent activity
           </Text>
-          <Text dimColor>{recentActivity}</Text>
+          <Text color="greenBright">{recentActivity}</Text>
         </Box>
       </Box>
 
