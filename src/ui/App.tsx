@@ -15,6 +15,7 @@ interface AppProps {
 }
 
 interface PaletteAction {
+  group: string;
   label: string;
   description: string;
   run: () => Promise<void>;
@@ -31,6 +32,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   const [runtimeConfig, setRuntimeConfig] = useState<AppConfig>(config);
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
+  const [paletteQuery, setPaletteQuery] = useState("");
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const assistantIndex = useRef<number | null>(null);
@@ -39,6 +41,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   const paletteActions = useMemo<PaletteAction[]>(() => {
     return [
       {
+        group: "Mode",
         label: "Switch to chat",
         description: "Set the session mode to chat.",
         run: async () => {
@@ -46,6 +49,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         },
       },
       {
+        group: "Mode",
         label: "Switch to plan",
         description: "Set the session mode to plan.",
         run: async () => {
@@ -53,6 +57,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         },
       },
       {
+        group: "Mode",
         label: "Switch to agent",
         description: "Set the session mode to agent.",
         run: async () => {
@@ -60,6 +65,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         },
       },
       {
+        group: "Session",
         label: "Clear conversation",
         description: "Remove the current session history.",
         run: async () => {
@@ -74,6 +80,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         },
       },
       {
+        group: "Info",
         label: "Show config path",
         description: "Print ~/.minimax-tui/setting.json in the UI.",
         run: async () => {
@@ -82,6 +89,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         },
       },
       {
+        group: "Help",
         label: "Show help",
         description: "Display slash commands and shortcuts.",
         run: async () => {
@@ -107,6 +115,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       } else {
         setIsPaletteOpen(true);
         setPaletteIndex(0);
+        setPaletteQuery("");
       }
       return;
     }
@@ -132,6 +141,12 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         return;
       }
 
+      if (key.backspace) {
+        setPaletteQuery((current) => current.slice(0, -1));
+        setPaletteIndex(0);
+        return;
+      }
+
       if (key.upArrow) {
         setPaletteIndex((current) => Math.max(0, current - 1));
         return;
@@ -143,12 +158,17 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       }
 
       if (key.return) {
-        const action = paletteActions[paletteIndex];
+        const action = filteredPaletteActions[paletteIndex];
         if (action) {
           setIsPaletteOpen(false);
           void action.run();
         }
         return;
+      }
+
+      if (input) {
+        setPaletteQuery((current) => `${current}${input}`);
+        setPaletteIndex(0);
       }
 
       return;
@@ -425,6 +445,24 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     });
   }
 
+  const filteredPaletteActions = useMemo(() => {
+    const normalizedQuery = paletteQuery.trim().toLowerCase();
+    const filtered = normalizedQuery.length === 0
+      ? paletteActions
+      : paletteActions.filter((action) => {
+          const haystack = `${action.group} ${action.label} ${action.description}`.toLowerCase();
+          return haystack.includes(normalizedQuery);
+        });
+
+    return filtered;
+  }, [paletteActions, paletteQuery]);
+
+  useEffect(() => {
+    if (paletteIndex >= filteredPaletteActions.length) {
+      setPaletteIndex(Math.max(0, filteredPaletteActions.length - 1));
+    }
+  }, [filteredPaletteActions.length, paletteIndex]);
+
   async function applyMode(mode: AppConfig["mode"]): Promise<void> {
     const nextConfig = { ...runtimeConfig, mode };
     setRuntimeConfig(nextConfig);
@@ -490,20 +528,13 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
               Command Palette
             </Text>
           </Box>
-          {paletteActions.map((action, index) => {
-            const selected = index === paletteIndex;
-            return (
-              <Box key={action.label} paddingX={1}>
-                <Text color={selected ? "black" : "white"} backgroundColor={selected ? "cyan" : undefined} bold={selected}>
-                  {selected ? ">" : " "} {action.label}
-                </Text>
-                <Text dimColor> - {action.description}</Text>
-              </Box>
-            );
-          })}
+          <Box paddingX={1} paddingBottom={1}>
+            <Text color="yellow">Search: {paletteQuery || "all"}</Text>
+          </Box>
+          {renderPaletteGroups(filteredPaletteActions, paletteIndex)}
           <Box paddingX={1} paddingBottom={1}>
             <Text dimColor>
-              Up/Down to move, Enter to run, Esc to close, Ctrl+K to toggle.
+              Type to filter, Up/Down to move, Enter to run, Esc to close, Ctrl+K to toggle.
             </Text>
           </Box>
         </Box>
@@ -549,4 +580,44 @@ function renderDraft(draft: string): React.ReactNode {
       {index === lines.length - 1 ? "█" : ""}
     </Text>
   ));
+}
+
+function renderPaletteGroups(actions: PaletteAction[], selectedIndex: number): React.ReactNode {
+  const groups = new Map<string, PaletteAction[]>();
+  for (const action of actions) {
+    const existing = groups.get(action.group) ?? [];
+    existing.push(action);
+    groups.set(action.group, existing);
+  }
+
+  let globalIndex = 0;
+  const nodes: React.ReactNode[] = [];
+  for (const [group, groupActions] of groups.entries()) {
+    nodes.push(
+      <Box key={group} flexDirection="column" paddingX={1}>
+        <Text color="cyanBright" bold>
+          {group}
+        </Text>
+        {groupActions.map((action) => {
+          const selected = globalIndex === selectedIndex;
+          const node = (
+            <Box key={action.label} paddingLeft={1}>
+              <Text
+                color={selected ? "black" : "white"}
+                backgroundColor={selected ? "cyan" : undefined}
+                bold={selected}
+              >
+                {selected ? ">" : " "} {action.label}
+              </Text>
+              <Text dimColor> - {action.description}</Text>
+            </Box>
+          );
+          globalIndex += 1;
+          return node;
+        })}
+      </Box>,
+    );
+  }
+
+  return nodes;
 }
