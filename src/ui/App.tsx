@@ -220,12 +220,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       return;
     }
 
-    if (key.backspace) {
-      setDraft((current) => removeLastGrapheme(current));
-      return;
-    }
-
-    if (key.delete || input === "\u0008" || input === "\u007f") {
+    if (isBackspaceInput(input, key)) {
       setDraft((current) => removeLastGrapheme(current));
       return;
     }
@@ -718,6 +713,10 @@ function sanitizeMessages(messages: ChatMessage[]): ChatMessage[] {
 
 function sanitizeDisplayText(text: string): string {
   return text.replace(/\uFFFD/g, "");
+}
+
+function isBackspaceInput(input: string, key: { backspace: boolean; delete: boolean }): boolean {
+  return key.backspace || key.delete || input === "\u0008" || input === "\u007f";
 }
 
 function removeLastGrapheme(text: string): string {
