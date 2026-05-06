@@ -1548,15 +1548,21 @@ function pathBasename(value: string): string {
       </Box>
 
       <Box marginBottom={1} borderStyle="double" borderColor="cyan">
-        <Box width={22} flexDirection="column" paddingX={1} paddingY={0}>
+        <Box width={24} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
             ╭──────────╮
           </Text>
-          <Text color="cyanBright" bold>
-            │ MINIMAX  │
+          <Text>
+            <Text color="cyanBright" bold>│ </Text>
+            <Text color="yellowBright" bold>MINIMAX</Text>
+            <Text color="cyanBright" bold> │</Text>
           </Text>
-          <Text color="cyanBright" bold>
-            │  T U I   │
+          <Text>
+            <Text color="cyanBright" bold>│ </Text>
+            <Text color="magentaBright" bold>T</Text>
+            <Text color="cyanBright" bold> U </Text>
+            <Text color="magentaBright" bold>I</Text>
+            <Text color="cyanBright" bold> │</Text>
           </Text>
           <Text color="cyanBright" bold>
             │  ░ ░ ░   │
@@ -1567,37 +1573,51 @@ function pathBasename(value: string): string {
           <Text color="yellowBright" bold>
             minimax-tui
           </Text>
-          <Text color="magentaBright">
+          <Text color="greenBright">
             workspace agent
           </Text>
         </Box>
         <Box flexGrow={1} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
-            ╭────────────── Workspace Snapshot ──────────────╮
+            ╭──────── Workspace Snapshot ────────╮
           </Text>
-          <Text color="white">
-            Started: {launchTime}
+          <Text>
+            <Text color="magentaBright" bold>Started</Text>
+            <Text color="white"> {launchTime}</Text>
           </Text>
-          <Text color="white">
-            Workspace: {process.cwd()}
+          <Text>
+            <Text color="magentaBright" bold>Workspace</Text>
+            <Text color="white"> {pathBasename(process.cwd())}</Text>
           </Text>
-          <Text color="white">
-            Session: {sessionTitle} ({activeSession.id.slice(0, 8)})
+          <Text>
+            <Text color="magentaBright" bold>Session</Text>
+            <Text color="white"> {sessionTitle}</Text>
+            <Text color="cyanBright"> · </Text>
+            <Text color="white">{activeSession.id.slice(0, 8)}</Text>
           </Text>
-          <Text color="white">
-            Messages: {messages.length} | Status: {status}
+          <Text>
+            <Text color="magentaBright" bold>Mode</Text>
+            <Text color="white"> {runtimeConfig.mode}</Text>
+            <Text color="cyanBright"> · </Text>
+            <Text color="magentaBright" bold>Model</Text>
+            <Text color="white"> {runtimeConfig.model}</Text>
           </Text>
-          <Text color="white">
-            Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model}
+          <Text>
+            <Text color="magentaBright" bold>State</Text>
+            <Text color="white"> {messages.length} msgs</Text>
+            <Text color="cyanBright"> · </Text>
+            <Text color="white">{status}</Text>
           </Text>
-          <Text color="white">
-            Active skills: {activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ")}
+          <Text>
+            <Text color="magentaBright" bold>Skills</Text>
+            <Text color="white"> {activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ")}</Text>
           </Text>
-          <Text color="white">
-            Active plugins: {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
+          <Text>
+            <Text color="magentaBright" bold>Plugins</Text>
+            <Text color="white"> {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}</Text>
           </Text>
           <Text color="cyanBright">
-            ╰──────────────────────────────────────────────────╯
+            ╰──────────────────────────────────╯
           </Text>
         </Box>
         <Box width={40} flexDirection="column" paddingX={1} paddingY={0}>
