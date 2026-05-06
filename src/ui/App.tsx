@@ -1548,24 +1548,27 @@ function pathBasename(value: string): string {
       </Box>
 
       <Box marginBottom={1} borderStyle="double" borderColor="cyan">
-        <Box width={20} flexDirection="column" paddingX={1} paddingY={0}>
+        <Box width={22} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
-            ╭───────╮
+            ╭──────────╮
           </Text>
           <Text color="cyanBright" bold>
-            │  M X  │
+            │ MINIMAX  │
           </Text>
           <Text color="cyanBright" bold>
-            │  T U  │
+            │  T U I   │
           </Text>
           <Text color="cyanBright" bold>
-            │  I U  │
+            │  ░ ░ ░   │
           </Text>
           <Text color="cyanBright" bold>
-            ╰───────╯
+            ╰──────────╯
           </Text>
           <Text color="yellowBright" bold>
             minimax-tui
+          </Text>
+          <Text color="magentaBright">
+            workspace agent
           </Text>
         </Box>
         <Box flexGrow={1} flexDirection="column" paddingX={1} paddingY={0}>
