@@ -644,7 +644,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
           prompt
         </Text>
         <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} paddingY={0}>
-          {renderDraft(draft)}
+          {renderDraft(draft, stdout.columns ?? 80)}
         </Box>
         <Text dimColor>
           PgUp/PgDn or Up/Down to scroll message history.
@@ -821,15 +821,80 @@ function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function renderDraft(draft: string): React.ReactNode {
+function renderDraft(draft: string, columns: number): React.ReactNode {
   const cleanDraft = sanitizeDraftInput(draft);
+  const innerWidth = Math.max(1, columns - 4);
   const lines = cleanDraft.length > 0 ? cleanDraft.split("\n") : [""];
   return lines.map((line, index) => (
     <Text key={`${index}-${line}`}>
-      {line}
-      {index === lines.length - 1 ? "█" : ""}
+      {padDraftLine(index === lines.length - 1 ? `${line}█` : line, innerWidth)}
     </Text>
   ));
+}
+
+function padDraftLine(text: string, width: number): string {
+  const clipped = sliceDraftLine(text, width);
+  const padding = Math.max(0, width - measureDraftWidth(clipped));
+  return `${clipped}${" ".repeat(padding)}`;
+}
+
+function sliceDraftLine(text: string, width: number): string {
+  if (width <= 0) {
+    return "";
+  }
+
+  let visibleWidth = 0;
+  let output = "";
+  for (const character of Array.from(text)) {
+    const characterWidth = measureCharacterWidth(character);
+    if (visibleWidth + characterWidth > width) {
+      break;
+    }
+    visibleWidth += characterWidth;
+    output += character;
+  }
+
+  return output;
+}
+
+function measureDraftWidth(text: string): number {
+  let width = 0;
+  for (const character of Array.from(text)) {
+    width += measureCharacterWidth(character);
+  }
+  return width;
+}
+
+function measureCharacterWidth(character: string): number {
+  const codePoint = character.codePointAt(0) ?? 0;
+  if (codePoint === 0) {
+    return 0;
+  }
+
+  if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+    return 0;
+  }
+
+  if (
+    codePoint >= 0x1100 &&
+    (codePoint <= 0x115f ||
+      codePoint === 0x2329 ||
+      codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
+      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
+      (codePoint >= 0x20000 && codePoint <= 0x3fffd))
+  ) {
+    return 2;
+  }
+
+  return 1;
 }
 
 function renderPaletteGroups(actions: PaletteAction[], selectedIndex: number): React.ReactNode {
