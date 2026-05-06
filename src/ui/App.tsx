@@ -221,7 +221,12 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     }
 
     if (key.backspace) {
-      setDraft((current) => current.slice(0, -1));
+      setDraft((current) => removeLastGrapheme(current));
+      return;
+    }
+
+    if (key.delete || input === "\u0008" || input === "\u007f") {
+      setDraft((current) => removeLastGrapheme(current));
       return;
     }
 
@@ -628,7 +633,9 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
               <Text color={isAssistant ? "green" : "yellow"} bold>
                 {label}
               </Text>
-              <Text wrap="wrap">{message.content || (isAssistant && isSending ? "..." : "")}</Text>
+              <Text wrap="wrap">
+                {sanitizeDisplayText(message.content) || (isAssistant && isSending ? "..." : "")}
+              </Text>
             </Box>
           );
         })}
@@ -702,8 +709,30 @@ function calculateViewport({ rows, draft, paletteOpen }: ViewportArgs): { pageSi
 function sanitizeMessages(messages: ChatMessage[]): ChatMessage[] {
   return messages.map((message) => ({
     ...message,
-    content: message.role === "assistant" ? stripThinkBlocks(message.content) : message.content,
+    content:
+      message.role === "assistant"
+        ? sanitizeDisplayText(stripThinkBlocks(message.content))
+        : sanitizeDisplayText(message.content),
   }));
+}
+
+function sanitizeDisplayText(text: string): string {
+  return text.replace(/\uFFFD/g, "");
+}
+
+function removeLastGrapheme(text: string): string {
+  if (text.length === 0) {
+    return text;
+  }
+
+  if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
+    const segmenter = new Intl.Segmenter("zh-Hans", { granularity: "grapheme" });
+    const segments = Array.from(segmenter.segment(text));
+    segments.pop();
+    return segments.map((segment) => segment.segment).join("");
+  }
+
+  return Array.from(text).slice(0, -1).join("");
 }
 
 function stripThinkBlocks(text: string): string {
@@ -769,7 +798,8 @@ function normalizeBaseUrl(value: string): string {
 }
 
 function renderDraft(draft: string): React.ReactNode {
-  const lines = draft.length > 0 ? draft.split("\n") : [""];
+  const cleanDraft = sanitizeDisplayText(draft);
+  const lines = cleanDraft.length > 0 ? cleanDraft.split("\n") : [""];
   return lines.map((line, index) => (
     <Text key={`${index}-${line}`}>
       {line}
