@@ -291,7 +291,7 @@ async function handlePluginsCommand(args: string[]): Promise<void> {
 
     for (const plugin of plugins) {
       process.stdout.write(
-        `${plugin.name}\t${plugin.displayName}\t${plugin.skillCount} skills\t${plugin.installedAt}\n`,
+        `${plugin.name}\t${plugin.displayName}\t${plugin.skillCount} skills\t${plugin.hookCount} hooks\t${plugin.mcpServerCount} mcp\t${plugin.installedAt}\n`,
       );
     }
     return;

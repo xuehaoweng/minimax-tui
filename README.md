@@ -110,6 +110,8 @@ Inside the TUI:
 /plugin remove plugin-name
 ```
 
+Plugins contribute their `skills`, `hooks`, and `mcpServers` metadata into the current agent session context. In this release, the hooks and MCP definitions are loaded and summarized for the model; they are not yet executed as live external services.
+
 ### One-off Flags
 
 CLI flags like `--api-key`, `--base-url`, and `--model` still work for one-off sessions, but the persistent source of truth is `~/.minimax-tui/setting.json`.

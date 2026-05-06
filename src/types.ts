@@ -109,4 +109,16 @@ export interface PluginSummary {
   description: string;
   installedAt: string;
   skillCount: number;
+  hookCount: number;
+  mcpServerCount: number;
+}
+
+export interface PluginRuntimeContext {
+  name: string;
+  displayName: string;
+  description: string;
+  skills: SkillManifest[];
+  hookSummaries: string[];
+  mcpSummaries: string[];
+  defaultPrompts: string[];
 }

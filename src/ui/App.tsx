@@ -14,7 +14,7 @@ import {
   installPluginFromSource,
   listInstalledPlugins,
   loadPluginManifests,
-  loadPluginSkillManifests,
+  loadPluginRuntimeContext,
   removePlugin,
 } from "../plugins.js";
 import type {
@@ -22,7 +22,7 @@ import type {
   ChatMessage,
   ConversationSession,
   ConversationSessionSummary,
-  PluginManifest,
+  PluginRuntimeContext,
   PluginSummary,
   SkillManifest,
   SkillSummary,
@@ -78,8 +78,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const [installedSkills, setInstalledSkills] = useState<SkillSummary[]>([]);
   const [activeSkillManifests, setActiveSkillManifests] = useState<SkillManifest[]>([]);
   const [installedPlugins, setInstalledPlugins] = useState<PluginSummary[]>([]);
-  const [activePluginManifests, setActivePluginManifests] = useState<PluginManifest[]>([]);
-  const [activePluginSkillManifests, setActivePluginSkillManifests] = useState<SkillManifest[]>([]);
+  const [activePluginContexts, setActivePluginContexts] = useState<PluginRuntimeContext[]>([]);
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sanitizedMessages = useMemo(() => sanitizeMessages(messages), [messages]);
@@ -487,18 +486,21 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   }, [filteredSlashCommands.length, slashPickerIndex]);
 
   const activeAssistantManifests = useMemo(() => {
-    return dedupeSkillManifests([...activeSkillManifests, ...activePluginSkillManifests]);
-  }, [activePluginSkillManifests, activeSkillManifests]);
+    return dedupeSkillManifests([
+      ...activeSkillManifests,
+      ...activePluginContexts.flatMap((plugin) => plugin.skills),
+    ]);
+  }, [activePluginContexts, activeSkillManifests]);
 
   const conversation = useMemo(() => {
     return [
       {
         role: "system" as const,
-        content: composeSystemPrompt(runtimeConfig, activeAssistantManifests, activePluginManifests),
+        content: composeSystemPrompt(runtimeConfig, activeAssistantManifests, activePluginContexts),
       },
       ...sanitizedMessages,
     ];
-  }, [activeAssistantManifests, activePluginManifests, runtimeConfig, sanitizedMessages]);
+  }, [activeAssistantManifests, activePluginContexts, runtimeConfig, sanitizedMessages]);
 
   const viewport = useMemo(() => {
     return calculateViewport({
@@ -1088,15 +1090,13 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   async function refreshActivePluginManifests(): Promise<void> {
     try {
       const manifests = await loadPluginManifests(activePluginNames);
-      setActivePluginManifests(manifests);
-      const skillGroups = await Promise.all(manifests.map((manifest) => loadPluginSkillManifests(manifest)));
-      setActivePluginSkillManifests(skillGroups.flat());
+      const contexts = await Promise.all(manifests.map((manifest) => loadPluginRuntimeContext(manifest)));
+      setActivePluginContexts(contexts);
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(`Failed to load active plugins: ${message}`);
       setStatus("Plugin load error");
-      setActivePluginManifests([]);
-      setActivePluginSkillManifests([]);
+      setActivePluginContexts([]);
     }
   }
 
@@ -1278,7 +1278,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     return plugins
       .map(
         (plugin) =>
-          `${plugin.name} | ${plugin.displayName} | ${plugin.skillCount} skills | ${plugin.installedAt}`,
+          `${plugin.name} | ${plugin.displayName} | ${plugin.skillCount} skills | ${plugin.hookCount} hooks | ${plugin.mcpServerCount} mcp | ${plugin.installedAt}`,
       )
       .join("\n");
   }
@@ -1617,7 +1617,7 @@ function stripThinkBlocks(text: string): string {
 function composeSystemPrompt(
   config: AppConfig,
   skills: SkillManifest[],
-  plugins: PluginManifest[],
+  plugins: PluginRuntimeContext[],
 ): string {
   const modePrompt = getModePrompt(config.mode);
   const pluginPrompt =
@@ -1625,12 +1625,11 @@ function composeSystemPrompt(
       ? [
           "Active plugins:",
           ...plugins.map((plugin) => {
-            const displayName = plugin.interface?.displayName ?? plugin.name;
-            const shortDescription = plugin.interface?.shortDescription ?? plugin.description ?? "";
-            const prompts = plugin.interface?.defaultPrompt ?? [];
             return [
-              `- ${displayName} (${plugin.name})${shortDescription ? `: ${shortDescription}` : ""}`,
-              ...prompts.map((prompt) => `  - ${prompt}`),
+              `- ${plugin.displayName} (${plugin.name})${plugin.description ? `: ${plugin.description}` : ""}`,
+              ...(plugin.defaultPrompts.length > 0 ? plugin.defaultPrompts.map((prompt) => `  - ${prompt}`) : []),
+              ...(plugin.hookSummaries.length > 0 ? ["  hooks:", ...plugin.hookSummaries.map((hook) => `    - ${hook}`)] : []),
+              ...(plugin.mcpSummaries.length > 0 ? ["  mcp:", ...plugin.mcpSummaries.map((server) => `    - ${server}`)] : []),
             ].join("\n");
           }),
         ].join("\n")

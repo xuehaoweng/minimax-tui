@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { PluginManifest, PluginSummary, SkillManifest } from "./types.js";
+import type { PluginManifest, PluginRuntimeContext, PluginSummary, SkillManifest } from "./types.js";
 import { loadSkillManifestsFromDirectory } from "./skills.js";
 
 const execFileAsync = promisify(execFile);
@@ -29,6 +29,8 @@ export async function listInstalledPlugins(): Promise<PluginSummary[]> {
     }
 
     const skillCount = await countPluginSkills(pluginDir, manifest);
+    const hookCount = await countPluginHooks(pluginDir, manifest);
+    const mcpServerCount = await countPluginMcpServers(pluginDir, manifest);
     const stat = await fs.stat(path.join(pluginDir, ".codex-plugin", "plugin.json"));
     results.push({
       name: manifest.name,
@@ -36,6 +38,8 @@ export async function listInstalledPlugins(): Promise<PluginSummary[]> {
       description: manifest.description ?? manifest.interface?.shortDescription ?? "No description",
       installedAt: stat.mtime.toISOString(),
       skillCount,
+      hookCount,
+      mcpServerCount,
     });
   }
 
@@ -97,6 +101,27 @@ export async function loadPluginSkillManifests(plugin: PluginManifest): Promise<
   }
 }
 
+export async function loadPluginRuntimeContext(plugin: PluginManifest): Promise<PluginRuntimeContext> {
+  const pluginDir = path.join(getPluginsDir(), plugin.name);
+  const displayName = plugin.interface?.displayName ?? plugin.name;
+  const description = plugin.description ?? plugin.interface?.shortDescription ?? "No description";
+  const [skills, hookSummaries, mcpSummaries] = await Promise.all([
+    loadPluginSkillManifests(plugin),
+    loadPluginHookSummaries(pluginDir, plugin),
+    loadPluginMcpSummaries(pluginDir, plugin),
+  ]);
+
+  return {
+    name: plugin.name,
+    displayName,
+    description,
+    skills,
+    hookSummaries,
+    mcpSummaries,
+    defaultPrompts: plugin.interface?.defaultPrompt ?? [],
+  };
+}
+
 async function loadPluginManifestFromDir(pluginDir: string): Promise<PluginManifest | null> {
   const manifestPath = path.join(pluginDir, ".codex-plugin", "plugin.json");
   try {
@@ -133,6 +158,127 @@ async function countPluginSkills(pluginDir: string, manifest: PluginManifest): P
   } catch {
     return 0;
   }
+}
+
+async function countPluginHooks(pluginDir: string, manifest: PluginManifest): Promise<number> {
+  const hookRoot = await resolvePluginResourcePath(pluginDir, manifest.hooks, ["./hooks", "./hooks.json"]);
+  if (!hookRoot) {
+    return 0;
+  }
+
+  try {
+    const stat = await fs.stat(hookRoot);
+    if (stat.isFile()) {
+      return 1;
+    }
+
+    return await countFiles(hookRoot);
+  } catch {
+    return 0;
+  }
+}
+
+async function countPluginMcpServers(pluginDir: string, manifest: PluginManifest): Promise<number> {
+  const mcpRoot = await resolvePluginResourcePath(pluginDir, manifest.mcpServers, ["./.mcp.json", "./mcp.json"]);
+  if (!mcpRoot) {
+    return 0;
+  }
+
+  try {
+    const raw = await fs.readFile(mcpRoot, "utf8");
+    const parsed = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+    return Object.keys(parsed.mcpServers ?? {}).length;
+  } catch {
+    return 0;
+  }
+}
+
+async function loadPluginHookSummaries(pluginDir: string, manifest: PluginManifest): Promise<string[]> {
+  const hookRoot = await resolvePluginResourcePath(pluginDir, manifest.hooks, ["./hooks", "./hooks.json"]);
+  if (!hookRoot) {
+    return [];
+  }
+
+  try {
+    const stat = await fs.stat(hookRoot);
+    if (stat.isFile()) {
+      return [`hooks: ${path.relative(pluginDir, hookRoot)}`];
+    }
+
+    const files = await listFilesRecursive(hookRoot);
+    return files.length > 0 ? files.map((file) => `hooks: ${path.relative(pluginDir, file)}`) : [`hooks: ${path.relative(pluginDir, hookRoot)} (empty)`];
+  } catch {
+    return [];
+  }
+}
+
+async function loadPluginMcpSummaries(pluginDir: string, manifest: PluginManifest): Promise<string[]> {
+  const mcpRoot = await resolvePluginResourcePath(pluginDir, manifest.mcpServers, ["./.mcp.json", "./mcp.json"]);
+  if (!mcpRoot) {
+    return [];
+  }
+
+  try {
+    const raw = await fs.readFile(mcpRoot, "utf8");
+    const parsed = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+    const names = Object.keys(parsed.mcpServers ?? {});
+    return names.length > 0 ? names.map((name) => `mcp: ${name}`) : [`mcp: ${path.relative(pluginDir, mcpRoot)} (empty)`];
+  } catch {
+    return [];
+  }
+}
+
+async function countFiles(rootDir: string): Promise<number> {
+  let total = 0;
+  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const child = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      total += await countFiles(child);
+      continue;
+    }
+    total += 1;
+  }
+  return total;
+}
+
+async function listFilesRecursive(rootDir: string): Promise<string[]> {
+  const files: string[] = [];
+  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const child = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listFilesRecursive(child)));
+      continue;
+    }
+    files.push(child);
+  }
+  return files;
+}
+
+async function resolvePluginResourcePath(
+  pluginDir: string,
+  configuredPath: string | undefined,
+  fallbackPaths: string[],
+): Promise<string | null> {
+  const candidates = [
+    ...(configuredPath ? [configuredPath] : []),
+    ...fallbackPaths,
+  ];
+
+  for (const candidate of candidates) {
+    const resolved = path.resolve(pluginDir, candidate);
+    try {
+      const stat = await fs.stat(resolved);
+      if (stat.isFile() || stat.isDirectory()) {
+        return resolved;
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return null;
 }
 
 async function copyPluginTree(sourceDir: string, destinationDir: string): Promise<void> {
