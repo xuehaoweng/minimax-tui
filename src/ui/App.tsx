@@ -40,6 +40,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const sanitizedMessages = useMemo(() => sanitizeMessages(messages), [messages]);
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
     return [
@@ -235,9 +236,9 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         role: "system" as const,
         content: composeSystemPrompt(runtimeConfig),
       },
-      ...messages,
+      ...sanitizedMessages,
     ];
-  }, [messages, runtimeConfig]);
+  }, [runtimeConfig, sanitizedMessages]);
 
   const viewport = useMemo(() => {
     return calculateViewport({
@@ -248,29 +249,29 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   }, [draft, isPaletteOpen, stdout.rows]);
 
   const visibleMessages = useMemo(() => {
-    const maxOffset = Math.max(0, messages.length - viewport.pageSize);
+    const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
     const start = Math.min(scrollOffset, maxOffset);
     const end = start + viewport.pageSize;
     return {
       start,
-      end: Math.min(end, messages.length),
-      items: messages.slice(start, end),
+      end: Math.min(end, sanitizedMessages.length),
+      items: sanitizedMessages.slice(start, end),
       maxOffset,
     };
-  }, [messages, scrollOffset, viewport.pageSize]);
+  }, [sanitizedMessages, scrollOffset, viewport.pageSize]);
 
   useEffect(() => {
     void saveConversationState({
-      messages,
+      messages: sanitizedMessages,
       updatedAt: new Date().toISOString(),
     }).catch((cause) => {
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(`Failed to save session: ${message}`);
     });
-  }, [messages]);
+  }, [sanitizedMessages]);
 
   useEffect(() => {
-    const maxOffset = Math.max(0, messages.length - viewport.pageSize);
+    const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
     if (isPinnedToBottom) {
       setScrollOffset(maxOffset);
       return;
@@ -279,7 +280,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     if (scrollOffset > maxOffset) {
       setScrollOffset(maxOffset);
     }
-  }, [isPinnedToBottom, messages.length, scrollOffset, viewport.pageSize]);
+  }, [isPinnedToBottom, sanitizedMessages.length, scrollOffset, viewport.pageSize]);
 
   const submitDraft = async () => {
     const content = draft.trim();
@@ -478,8 +479,9 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     setError(null);
     setNotice(null);
     const session = await loadConversationState();
-    setMessages(session.messages);
-    setScrollOffset(Math.max(0, session.messages.length - viewport.pageSize));
+    const nextMessages = sanitizeMessages(session.messages);
+    setMessages(nextMessages);
+    setScrollOffset(Math.max(0, nextMessages.length - viewport.pageSize));
     setIsPinnedToBottom(true);
     setStatus("Conversation restored");
     setNotice("Reloaded the last saved session from disk");
@@ -535,7 +537,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
 
   function scrollMessages(direction: -1 | 1, usePage = false): void {
     const step = usePage ? Math.max(1, viewport.pageSize - 1) : Math.max(1, Math.floor(viewport.pageSize / 2));
-    const maxOffset = Math.max(0, messages.length - viewport.pageSize);
+    const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
     setIsPinnedToBottom(false);
     setScrollOffset((current) => {
       const next = current + step * direction;
@@ -579,9 +581,11 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       <Box flexDirection="column" marginBottom={1}>
         <Text dimColor>
           Messages{" "}
-          {messages.length === 0 ? "0-0" : `${visibleMessages.start + 1}-${visibleMessages.end}`} /{" "}
-          {messages.length}
-          {visibleMessages.end < messages.length ? " (more below)" : ""}
+          {sanitizedMessages.length === 0
+            ? "0-0"
+            : `${visibleMessages.start + 1}-${visibleMessages.end}`} /{" "}
+          {sanitizedMessages.length}
+          {visibleMessages.end < sanitizedMessages.length ? " (more below)" : ""}
         </Text>
       </Box>
 
@@ -645,6 +649,46 @@ function calculateViewport({ rows, draft, paletteOpen }: ViewportArgs): { pageSi
   return {
     pageSize: Math.max(3, Math.floor(available / 2)),
   };
+}
+
+function sanitizeMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: message.role === "assistant" ? stripThinkBlocks(message.content) : message.content,
+  }));
+}
+
+function stripThinkBlocks(text: string): string {
+  const openTag = "<think>";
+  const closeTag = "</think>";
+  let index = 0;
+  let insideThink = false;
+  let output = "";
+
+  while (index < text.length) {
+    if (!insideThink) {
+      const nextOpen = text.indexOf(openTag, index);
+      if (nextOpen === -1) {
+        output += text.slice(index);
+        break;
+      }
+
+      output += text.slice(index, nextOpen);
+      index = nextOpen + openTag.length;
+      insideThink = true;
+      continue;
+    }
+
+    const nextClose = text.indexOf(closeTag, index);
+    if (nextClose === -1) {
+      break;
+    }
+
+    index = nextClose + closeTag.length;
+    insideThink = false;
+  }
+
+  return output.replace(/<\/?think>/gi, "").trimEnd();
 }
 
 function composeSystemPrompt(config: AppConfig): string {
