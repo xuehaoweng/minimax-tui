@@ -34,6 +34,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteGroup, setPaletteGroup] = useState<string | null>(null);
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -122,6 +123,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         setIsPaletteOpen(true);
         setPaletteIndex(0);
         setPaletteQuery("");
+        setPaletteGroup(null);
       }
       return;
     }
@@ -147,6 +149,11 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         return;
       }
 
+      if (key.tab) {
+        cyclePaletteGroup(key.shift ? -1 : 1);
+        return;
+      }
+
       if (key.backspace) {
         setPaletteQuery((current) => current.slice(0, -1));
         setPaletteIndex(0);
@@ -159,7 +166,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       }
 
       if (key.downArrow) {
-        setPaletteIndex((current) => Math.min(paletteActions.length - 1, current + 1));
+        setPaletteIndex((current) => Math.min(filteredPaletteActions.length - 1, current + 1));
         return;
       }
 
@@ -511,21 +518,33 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
 
   const filteredPaletteActions = useMemo(() => {
     const normalizedQuery = paletteQuery.trim().toLowerCase();
-    const filtered = normalizedQuery.length === 0
-      ? paletteActions
-      : paletteActions.filter((action) => {
-          const haystack = `${action.group} ${action.label} ${action.description}`.toLowerCase();
-          return haystack.includes(normalizedQuery);
-        });
+    const normalizedGroup = paletteGroup?.trim().toLowerCase() ?? "";
+    return paletteActions.filter((action) => {
+      const haystack = `${action.group} ${action.label} ${action.description}`.toLowerCase();
+      const matchesQuery = normalizedQuery.length === 0 || haystack.includes(normalizedQuery);
+      const matchesGroup =
+        normalizedGroup.length === 0 ||
+        normalizedGroup === "all" ||
+        action.group.toLowerCase() === normalizedGroup;
+      return matchesQuery && matchesGroup;
+    });
+  }, [paletteActions, paletteGroup, paletteQuery]);
 
-    return filtered;
-  }, [paletteActions, paletteQuery]);
+  const paletteGroups = useMemo(() => {
+    return ["All", ...new Set(paletteActions.map((action) => action.group))];
+  }, [paletteActions]);
 
   useEffect(() => {
     if (paletteIndex >= filteredPaletteActions.length) {
       setPaletteIndex(Math.max(0, filteredPaletteActions.length - 1));
     }
   }, [filteredPaletteActions.length, paletteIndex]);
+
+  useEffect(() => {
+    if (paletteGroup && !paletteActions.some((action) => action.group === paletteGroup)) {
+      setPaletteGroup(null);
+    }
+  }, [paletteActions, paletteGroup]);
 
   async function applyMode(mode: AppConfig["mode"]): Promise<void> {
     const nextConfig = { ...runtimeConfig, mode };
@@ -550,6 +569,16 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       }
       return next;
     });
+  }
+
+  function cyclePaletteGroup(direction: -1 | 1): void {
+    const currentName = paletteGroup ?? "All";
+    const currentIndex = paletteGroups.findIndex((group) => group === currentName);
+    const nextIndex = (currentIndex + direction + paletteGroups.length) % paletteGroups.length;
+    const nextGroup = paletteGroups[nextIndex] ?? "All";
+    setPaletteGroup(nextGroup === "All" ? null : nextGroup);
+    setPaletteIndex(0);
+    setPaletteQuery("");
   }
 
   return (
@@ -580,12 +609,13 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
 
       <Box flexDirection="column" marginBottom={1}>
         <Text dimColor>
-          Messages{" "}
+          Follow: {isPinnedToBottom ? "on" : "off"} | Pinned: {isPinnedToBottom ? "bottom" : "free"} | View:{" "}
           {sanitizedMessages.length === 0
             ? "0-0"
-            : `${visibleMessages.start + 1}-${visibleMessages.end}`} /{" "}
-          {sanitizedMessages.length}
-          {visibleMessages.end < sanitizedMessages.length ? " (more below)" : ""}
+            : `${visibleMessages.start + 1}-${visibleMessages.end}`} / {sanitizedMessages.length}
+        </Text>
+        <Text dimColor>
+          {visibleMessages.end < sanitizedMessages.length ? "More below" : isPinnedToBottom ? "Pinned to latest" : "Manual scroll"}
         </Text>
       </Box>
 
@@ -611,6 +641,9 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} paddingY={0}>
           {renderDraft(draft)}
         </Box>
+        <Text dimColor>
+          PgUp/PgDn or Up/Down to scroll message history.
+        </Text>
       </Box>
 
       {isPaletteOpen ? (
@@ -621,12 +654,27 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
             </Text>
           </Box>
           <Box paddingX={1} paddingBottom={1}>
+            {paletteGroups.map((group) => {
+              const active = (paletteGroup ?? "All") === group;
+              return (
+                <Text
+                  key={group}
+                  color={active ? "black" : "cyanBright"}
+                  backgroundColor={active ? "cyan" : undefined}
+                  bold={active}
+                >
+                  {active ? `[${group}]` : ` ${group} `}
+                </Text>
+              );
+            })}
+          </Box>
+          <Box paddingX={1} paddingBottom={1}>
             <Text color="yellow">Search: {paletteQuery || "all"}</Text>
           </Box>
           {renderPaletteGroups(filteredPaletteActions, paletteIndex)}
           <Box paddingX={1} paddingBottom={1}>
             <Text dimColor>
-              Type to filter, Up/Down to move, Enter to run, Esc to close, Ctrl+K to toggle.
+              Type to filter, Tab to switch groups, Up/Down to move, Enter to run, Esc to close, Ctrl+K to toggle.
             </Text>
           </Box>
         </Box>
