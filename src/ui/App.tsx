@@ -229,7 +229,10 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       if (historyCursor !== null) {
         setHistoryCursor(null);
       }
-      setDraft((current) => `${current}${input}`);
+      const cleanInput = sanitizeDraftInput(input);
+      if (cleanInput) {
+        setDraft((current) => `${current}${cleanInput}`);
+      }
     }
   });
 
@@ -305,7 +308,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     setNotice(null);
     setIsSending(true);
     setStatus(`Sending request in ${runtimeConfig.mode} mode...`);
-    setPromptHistory((current) => [...current, content]);
+    setPromptHistory((current) => [...current, sanitizeDraftInput(content)]);
     setHistoryCursor(null);
     setDraft("");
     setIsPinnedToBottom(true);
@@ -511,7 +514,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         return current;
       }
 
-      setDraft(promptHistory[nextIndex] ?? "");
+      setDraft(sanitizeDraftInput(promptHistory[nextIndex] ?? ""));
       return nextIndex;
     });
   }
@@ -719,6 +722,28 @@ function isBackspaceInput(input: string, key: { backspace: boolean; delete: bool
   return key.backspace || key.delete || input === "\u0008" || input === "\u007f";
 }
 
+function sanitizeDraftInput(input: string): string {
+  return Array.from(input)
+    .filter((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      if (character === "\n" || character === "\t") {
+        return true;
+      }
+      if (codePoint < 0x20 || codePoint === 0x7f) {
+        return false;
+      }
+      if (codePoint === 0xfffd) {
+        return false;
+      }
+      if (codePoint >= 0x2500 && codePoint <= 0x257f) {
+        return false;
+      }
+      return true;
+    })
+    .join("")
+    .replace(/\r\n/g, "\n");
+}
+
 function removeLastGrapheme(text: string): string {
   if (text.length === 0) {
     return text;
@@ -797,7 +822,7 @@ function normalizeBaseUrl(value: string): string {
 }
 
 function renderDraft(draft: string): React.ReactNode {
-  const cleanDraft = sanitizeDisplayText(draft);
+  const cleanDraft = sanitizeDraftInput(draft);
   const lines = cleanDraft.length > 0 ? cleanDraft.split("\n") : [""];
   return lines.map((line, index) => (
     <Text key={`${index}-${line}`}>
