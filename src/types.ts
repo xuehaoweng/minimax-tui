@@ -1,9 +1,21 @@
-export type Role = "system" | "user" | "assistant";
+export type Role = "system" | "user" | "assistant" | "tool";
 export type ChatMode = "chat" | "plan" | "agent";
 
 export interface ChatMessage {
   role: Role;
   content: string;
+  name?: string;
+  toolCallId?: string;
+  toolCalls?: ToolCall[];
+}
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
 }
 
 export interface AppConfig {
@@ -37,6 +49,7 @@ export interface ConversationSession {
   createdAt: string;
   updatedAt: string;
   messages: ChatMessage[];
+  activeSkills?: string[];
 }
 
 export interface ConversationStore {
@@ -50,4 +63,19 @@ export interface ConversationSessionSummary {
   createdAt: string;
   updatedAt: string;
   messageCount: number;
+  activeSkills?: string[];
+}
+
+export interface SkillManifest {
+  name: string;
+  description: string;
+  instructions: string;
+  sourcePath: string;
+  installedAt: string;
+}
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  installedAt: string;
 }

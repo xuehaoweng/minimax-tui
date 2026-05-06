@@ -1,6 +1,7 @@
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { streamChatCompletion } from "../api/minimax.js";
+import { runAgentTurn } from "../agent.js";
 import {
   getSettingPath,
   listConversationSessions,
@@ -8,11 +9,14 @@ import {
   resetConversationSession,
   saveConversationSession,
 } from "../storage.js";
+import { installSkillFromPath, listInstalledSkills, loadSkillManifests, removeSkill } from "../skills.js";
 import type {
   AppConfig,
   ChatMessage,
   ConversationSession,
   ConversationSessionSummary,
+  SkillManifest,
+  SkillSummary,
   StoredConfig,
 } from "../types.js";
 
@@ -62,9 +66,12 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+  const [installedSkills, setInstalledSkills] = useState<SkillSummary[]>([]);
+  const [activeSkillManifests, setActiveSkillManifests] = useState<SkillManifest[]>([]);
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sanitizedMessages = useMemo(() => sanitizeMessages(messages), [messages]);
+  const activeSkillNames = useMemo(() => activeSession.activeSkills ?? [], [activeSession.activeSkills]);
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
     return [
@@ -126,7 +133,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config",
+            "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill",
           );
         },
       },
@@ -197,6 +204,12 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         kind: "action",
         name: "config",
         description: "Open the persistent settings wizard.",
+      },
+      {
+        kind: "insert",
+        name: "skill",
+        template: "/skill ",
+        description: "Install, activate, or list skills.",
       },
     ];
   }, []);
@@ -420,16 +433,6 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     setRuntimeConfig(config);
   }, [config]);
 
-  const conversation = useMemo(() => {
-    return [
-      {
-        role: "system" as const,
-        content: composeSystemPrompt(runtimeConfig),
-      },
-      ...sanitizedMessages,
-    ];
-  }, [runtimeConfig, sanitizedMessages]);
-
   const sessionTitle = useMemo(() => buildSessionTitle(sanitizedMessages), [sanitizedMessages]);
   const slashSearch = useMemo(() => {
     if (!draft.startsWith("/")) {
@@ -464,6 +467,16 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     }
   }, [filteredSlashCommands.length, slashPickerIndex]);
 
+  const conversation = useMemo(() => {
+    return [
+      {
+        role: "system" as const,
+        content: composeSystemPrompt(runtimeConfig, activeSkillManifests),
+      },
+      ...sanitizedMessages,
+    ];
+  }, [activeSkillManifests, runtimeConfig, sanitizedMessages]);
+
   const viewport = useMemo(() => {
     return calculateViewport({
       rows: stdout.rows ?? 24,
@@ -493,6 +506,14 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
     void refreshSessionPicker();
   }, [isSessionPickerOpen]);
+
+  useEffect(() => {
+    void refreshInstalledSkills();
+  }, []);
+
+  useEffect(() => {
+    void refreshActiveSkillManifests();
+  }, [activeSkillNames, installedSkills]);
 
   useEffect(() => {
     const draftIsSlashCommand = draft.startsWith("/");
@@ -579,26 +600,36 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     abortRef.current = controller;
 
     try {
-      await streamChatCompletion(
-        runtimeConfig,
-        [...conversation, { role: "user", content }],
-        (token) => {
-          setMessages((current) => {
-            const index = assistantIndex.current;
-            if (index === null || !current[index]) {
-              return current;
-            }
+      if (runtimeConfig.mode === "agent") {
+        const result = await runAgentTurn(
+          runtimeConfig,
+          [...conversation, { role: "user", content }],
+          activeSkillManifests,
+          controller.signal,
+        );
+        setMessages(result.messages);
+      } else {
+        await streamChatCompletion(
+          runtimeConfig,
+          [...conversation, { role: "user", content }],
+          (token) => {
+            setMessages((current) => {
+              const index = assistantIndex.current;
+              if (index === null || !current[index]) {
+                return current;
+              }
 
-            const next = [...current];
-            next[index] = {
-              ...next[index],
-              content: `${next[index].content}${token}`,
-            };
-            return next;
-          });
-        },
-        controller.signal,
-      );
+              const next = [...current];
+              next[index] = {
+                ...next[index],
+                content: `${next[index].content}${token}`,
+              };
+              return next;
+            });
+          },
+          controller.signal,
+        );
+      }
       setStatus("Ready");
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -635,7 +666,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config",
+          "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill",
         );
         setStatus("Command help");
         return;
@@ -737,6 +768,91 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         setStatus("Run `minimax-tui config` for interactive settings");
         setNotice("Use the config command to open the full settings wizard.");
         return;
+      case "skill": {
+        const [subcommand, ...skillRest] = argument.split(/\s+/);
+        const skillArg = skillRest.join(" ").trim();
+        if (!subcommand) {
+          const installed = installedSkills.length === 0 ? "No installed skills yet." : formatSkillList(installedSkills);
+          setStatus("Skill list");
+          setNotice(
+            [
+              `Installed skills: ${installedSkills.length}`,
+              installed,
+              `Active skills: ${activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ")}`,
+              "Use /skill install <path>, /skill use <name>, /skill remove <name>, /skill active.",
+            ].join("\n"),
+          );
+          return;
+        }
+
+        if (subcommand === "list" || subcommand === "active") {
+          const activeText = activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ");
+          setStatus("Skill list");
+          setNotice(
+            [
+              `Installed skills: ${installedSkills.length}`,
+              installedSkills.length === 0 ? "No installed skills yet." : formatSkillList(installedSkills),
+              `Active skills: ${activeText}`,
+            ].join("\n"),
+          );
+          return;
+        }
+
+        if (subcommand === "install") {
+          if (!skillArg) {
+            setError("Usage: /skill install <path>");
+            setStatus("Command error");
+            return;
+          }
+
+          const manifest = await installSkillFromPath(skillArg);
+          await refreshInstalledSkills();
+          setStatus(`Installed skill ${manifest.name}`);
+          setNotice(`Skill installed: ${manifest.name}`);
+          return;
+        }
+
+        if (subcommand === "use") {
+          if (!skillArg) {
+            setError("Usage: /skill use <name>");
+            setStatus("Command error");
+            return;
+          }
+
+          const match = installedSkills.find((skill) => skill.name === skillArg.toLowerCase());
+          if (!match) {
+            setError(`Skill not installed: ${skillArg}`);
+            setStatus("Command error");
+            return;
+          }
+
+          const nextActive = Array.from(new Set([...(activeSession.activeSkills ?? []), match.name]));
+          setActiveSession((current) => ({ ...current, activeSkills: nextActive }));
+          setStatus(`Activated skill ${match.name}`);
+          setNotice(`Active skills updated: ${nextActive.join(", ")}`);
+          return;
+        }
+
+        if (subcommand === "remove") {
+          if (!skillArg) {
+            setError("Usage: /skill remove <name>");
+            setStatus("Command error");
+            return;
+          }
+
+          await removeSkill(skillArg);
+          const nextActive = (activeSession.activeSkills ?? []).filter((name) => name !== skillArg.toLowerCase());
+          setActiveSession((current) => ({ ...current, activeSkills: nextActive }));
+          await refreshInstalledSkills();
+          setStatus(`Removed skill ${skillArg}`);
+          setNotice(`Active skills updated: ${nextActive.join(", ") || "none"}`);
+          return;
+        }
+
+        setError("Usage: /skill [list|active|install <path>|use <name>|remove <name>]");
+        setStatus("Command error");
+        return;
+      }
       default:
         setError(`Unknown command: /${name}. Try /help.`);
         setStatus("Command error");
@@ -817,6 +933,29 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     setSlashPickerSuppressed(true);
     setStatus(`Inserted /${command.name}`);
     setNotice(`Command ready: /${command.name}`);
+  }
+
+  async function refreshInstalledSkills(): Promise<void> {
+    try {
+      const skills = await listInstalledSkills();
+      setInstalledSkills(skills);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(`Failed to load skills: ${message}`);
+      setStatus("Skill refresh error");
+    }
+  }
+
+  async function refreshActiveSkillManifests(): Promise<void> {
+    try {
+      const manifests = await loadSkillManifests(activeSkillNames);
+      setActiveSkillManifests(manifests);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(`Failed to load active skills: ${message}`);
+      setStatus("Skill load error");
+      setActiveSkillManifests([]);
+    }
   }
 
   async function resumeSession(sessionId: string): Promise<void> {
@@ -987,6 +1126,12 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     return Array.from(normalized).slice(0, 32).join("");
   }
 
+  function formatSkillList(skills: SkillSummary[]): string {
+    return skills
+      .map((skill) => `${skill.name} | ${skill.description} | ${skill.installedAt}`)
+      .join("\n");
+  }
+
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
       <Box flexDirection="column" marginBottom={1}>
@@ -1000,7 +1145,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           Status: {status}
         </Text>
         <Text dimColor>
-          Slash: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config
+          Slash: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill
         </Text>
         <Text dimColor>
           Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, Ctrl+K for palette, type / to browse commands, Ctrl+C to exit
@@ -1301,9 +1446,16 @@ function stripThinkBlocks(text: string): string {
   return output.replace(/<\/?think>/gi, "").trimEnd();
 }
 
-function composeSystemPrompt(config: AppConfig): string {
+function composeSystemPrompt(config: AppConfig, skills: SkillManifest[]): string {
   const modePrompt = getModePrompt(config.mode);
-  return [config.systemPrompt.trim(), modePrompt].filter(Boolean).join("\n\n");
+  const skillPrompt =
+    skills.length > 0
+      ? [
+          "Active skills:",
+          ...skills.map((skill) => `- ${skill.name}: ${skill.description}\n${skill.instructions}`),
+        ].join("\n")
+      : "";
+  return [config.systemPrompt.trim(), modePrompt, skillPrompt].filter(Boolean).join("\n\n");
 }
 
 function getModePrompt(mode: AppConfig["mode"]): string {

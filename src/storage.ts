@@ -100,6 +100,7 @@ export async function listConversationSessions(): Promise<ConversationSessionSum
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     messageCount: session.messages.length,
+    activeSkills: session.activeSkills ?? [],
   }));
 }
 
@@ -139,6 +140,7 @@ function makeConversationSession(messages: ConversationSession["messages"]): Con
     createdAt: now,
     updatedAt: now,
     messages,
+    activeSkills: [],
   };
 }
 
@@ -147,6 +149,7 @@ function normalizeSession(session: ConversationSession): ConversationSession {
     ...session,
     title: session.title.trim() || "New session",
     messages: session.messages,
+    activeSkills: session.activeSkills ?? [],
     updatedAt: new Date().toISOString(),
   };
 }

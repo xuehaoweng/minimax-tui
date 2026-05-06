@@ -1,4 +1,4 @@
-import type { AppConfig, ChatMessage } from "../types.js";
+import type { AppConfig, ChatMessage, ToolCall } from "../types.js";
 
 interface ChatCompletionChunk {
   choices?: Array<{
@@ -8,6 +8,16 @@ interface ChatCompletionChunk {
     };
     message?: {
       content?: string;
+    };
+  }>;
+}
+
+interface ChatCompletionResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+      tool_calls?: ToolCall[];
+      role?: string;
     };
   }>;
 }
@@ -64,6 +74,35 @@ export async function streamChatCompletion(
       onToken(token);
     }
   }
+}
+
+export async function createChatCompletion(
+  config: AppConfig,
+  messages: ChatMessage[],
+  extraBody: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Promise<ChatCompletionResponse> {
+  const response = await fetch(new URL("/v1/chat/completions", config.baseUrl), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages,
+      temperature: config.temperature,
+      max_tokens: config.maxTokens,
+      ...extraBody,
+    }),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  return (await response.json()) as ChatCompletionResponse;
 }
 
 async function readErrorMessage(response: Response): Promise<string> {

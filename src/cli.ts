@@ -17,6 +17,7 @@ import {
   loadStoredConfig,
   saveStoredConfig,
 } from "./storage.js";
+import { installSkillFromPath, listInstalledSkills, removeSkill } from "./skills.js";
 import type { AppConfig } from "./types.js";
 
 function printHelp() {
@@ -32,6 +33,9 @@ Usage:
   minimax-tui sessions list
   minimax-tui sessions resume <session-id>
   minimax-tui history clear
+  minimax-tui skills list
+  minimax-tui skills install <path>
+  minimax-tui skills remove <name>
 `);
 }
 
@@ -61,6 +65,11 @@ async function main(): Promise<void> {
 
   if (command === "sessions") {
     await handleSessionsCommand(argv.slice(1));
+    return;
+  }
+
+  if (command === "skills") {
+    await handleSkillsCommand(argv.slice(1));
     return;
   }
 
@@ -217,4 +226,44 @@ async function handleSessionsCommand(args: string[]): Promise<void> {
   }
 
   throw new Error("Usage: minimax-tui sessions [list|resume <session-id>]");
+}
+
+async function handleSkillsCommand(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  if (!subcommand || subcommand === "list") {
+    const skills = await listInstalledSkills();
+    if (skills.length === 0) {
+      process.stdout.write("No installed skills yet.\n");
+      return;
+    }
+
+    for (const skill of skills) {
+      process.stdout.write(`${skill.name}\t${skill.description}\t${skill.installedAt}\n`);
+    }
+    return;
+  }
+
+  if (subcommand === "install") {
+    const sourcePath = args[1];
+    if (!sourcePath) {
+      throw new Error("Usage: minimax-tui skills install <path>");
+    }
+
+    const skill = await installSkillFromPath(sourcePath);
+    process.stdout.write(`Installed ${skill.name}.\n`);
+    return;
+  }
+
+  if (subcommand === "remove") {
+    const name = args[1];
+    if (!name) {
+      throw new Error("Usage: minimax-tui skills remove <name>");
+    }
+
+    await removeSkill(name);
+    process.stdout.write(`Removed ${name}.\n`);
+    return;
+  }
+
+  throw new Error("Usage: minimax-tui skills [list|install <path>|remove <name>]");
 }
