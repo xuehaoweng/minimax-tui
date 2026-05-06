@@ -1,13 +1,19 @@
 import { Box, Text, useApp, useInput } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { streamChatCompletion } from "../api/minimax.js";
-import { saveConversationState } from "../storage.js";
+import { getSettingPath, saveConversationState } from "../storage.js";
 import type { AppConfig, ChatMessage, StoredConfig } from "../types.js";
 
 interface AppProps {
   config: AppConfig;
   initialMessages: ChatMessage[];
   onConfigChange: (patch: Partial<StoredConfig>) => Promise<void>;
+}
+
+interface PaletteAction {
+  label: string;
+  description: string;
+  run: () => Promise<void>;
 }
 
 export function App({ config, initialMessages, onConfigChange }: AppProps) {
@@ -19,13 +25,111 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   const [notice, setNotice] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [runtimeConfig, setRuntimeConfig] = useState<AppConfig>(config);
+  const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+  const [paletteIndex, setPaletteIndex] = useState(0);
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  const paletteActions = useMemo<PaletteAction[]>(() => {
+    return [
+      {
+        label: "Switch to chat",
+        description: "Set the session mode to chat.",
+        run: async () => {
+          await applyMode("chat");
+        },
+      },
+      {
+        label: "Switch to plan",
+        description: "Set the session mode to plan.",
+        run: async () => {
+          await applyMode("plan");
+        },
+      },
+      {
+        label: "Switch to agent",
+        description: "Set the session mode to agent.",
+        run: async () => {
+          await applyMode("agent");
+        },
+      },
+      {
+        label: "Clear conversation",
+        description: "Remove the current session history.",
+        run: async () => {
+          abortRef.current?.abort();
+          setMessages([]);
+          await saveConversationState({
+            messages: [],
+            updatedAt: new Date().toISOString(),
+          });
+          setStatus("Conversation cleared");
+          setNotice("History removed from local session file");
+        },
+      },
+      {
+        label: "Show config path",
+        description: "Print ~/.minimax-tui/setting.json in the UI.",
+        run: async () => {
+          setStatus("Config path ready");
+          setNotice(`Config file: ${getSettingPath()}`);
+        },
+      },
+      {
+        label: "Show help",
+        description: "Display slash commands and shortcuts.",
+        run: async () => {
+          setStatus("Command help");
+          setNotice(
+            "Commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear",
+          );
+        },
+      },
+    ];
+  }, [applyMode]);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
       abortRef.current?.abort();
       exit();
+      return;
+    }
+
+    if (key.ctrl && input === "k") {
+      if (isPaletteOpen) {
+        setIsPaletteOpen(false);
+      } else {
+        setIsPaletteOpen(true);
+        setPaletteIndex(0);
+      }
+      return;
+    }
+
+    if (isPaletteOpen) {
+      if (key.escape) {
+        setIsPaletteOpen(false);
+        return;
+      }
+
+      if (key.upArrow) {
+        setPaletteIndex((current) => Math.max(0, current - 1));
+        return;
+      }
+
+      if (key.downArrow) {
+        setPaletteIndex((current) => Math.min(paletteActions.length - 1, current + 1));
+        return;
+      }
+
+      if (key.return) {
+        const action = paletteActions[paletteIndex];
+        if (action) {
+          setIsPaletteOpen(false);
+          void action.run();
+        }
+        return;
+      }
+
       return;
     }
 
@@ -264,6 +368,14 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     }
   }
 
+  async function applyMode(mode: AppConfig["mode"]): Promise<void> {
+    const nextConfig = { ...runtimeConfig, mode };
+    setRuntimeConfig(nextConfig);
+    await onConfigChange({ mode });
+    setStatus(`Mode set to ${mode}`);
+    setNotice("Mode updated and saved to setting.json");
+  }
+
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
       <Box flexDirection="column" marginBottom={1}>
@@ -313,6 +425,32 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
           {renderDraft(draft)}
         </Box>
       </Box>
+
+      {isPaletteOpen ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="double" borderColor="cyan">
+          <Box paddingX={1}>
+            <Text color="cyanBright" bold>
+              Command Palette
+            </Text>
+          </Box>
+          {paletteActions.map((action, index) => {
+            const selected = index === paletteIndex;
+            return (
+              <Box key={action.label} paddingX={1}>
+                <Text color={selected ? "black" : "white"} backgroundColor={selected ? "cyan" : undefined} bold={selected}>
+                  {selected ? ">" : " "} {action.label}
+                </Text>
+                <Text dimColor> - {action.description}</Text>
+              </Box>
+            );
+          })}
+          <Box paddingX={1} paddingBottom={1}>
+            <Text dimColor>
+              Up/Down to move, Enter to run, Esc to close, Ctrl+K to toggle.
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
     </Box>
   );
 }
