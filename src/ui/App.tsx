@@ -116,6 +116,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const activeSkillNames = useMemo(() => activeSession.activeSkills ?? [], [activeSession.activeSkills]);
   const activePluginNames = useMemo(() => activeSession.activePlugins ?? [], [activeSession.activePlugins]);
   const recentActivity = useMemo(() => buildRecentActivitySummary(sanitizedMessages), [sanitizedMessages]);
+  const subagentTasks = useMemo(() => extractSubagentTasks(sanitizedMessages), [sanitizedMessages]);
   const workspaceIndexSummary = useMemo(() => {
     return [
       `Root: ${workspaceIndex.rootDir}`,
@@ -200,7 +201,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Slash commands: /help /status /index [query] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
+            "Slash commands: /help /status /tasks /index [query] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
           );
         },
       },
@@ -218,6 +219,11 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         kind: "action",
         name: "status",
         description: "Show the current session status.",
+      },
+      {
+        kind: "action",
+        name: "tasks",
+        description: "Show recent subagent tasks.",
       },
       {
         kind: "action",
@@ -826,13 +832,18 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Slash commands: /help /status /index [query] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
+          "Slash commands: /help /status /tasks /index [query] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
         );
         setStatus("Command help");
         return;
       case "status": {
         setStatus("Session status");
         setNotice(formatSessionStatus());
+        return;
+      }
+      case "tasks": {
+        setStatus("Subagent tasks");
+        setNotice(formatSubagentTasks(subagentTasks));
         return;
       }
       case "index": {
@@ -1495,6 +1506,43 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     return `${role}: ${snippet}${content.length > 72 ? "..." : ""}`;
   }
 
+  function formatSubagentTasks(tasks: Array<{ goal: string; result: string; status: string }>): string {
+    if (tasks.length === 0) {
+      return "No subagent runs yet.";
+    }
+
+    return tasks
+      .slice(0, 4)
+      .map((task, index) => {
+        const goal = Array.from(task.goal).slice(0, 42).join("");
+        const result = Array.from(task.result).slice(0, 42).join("");
+        return `${index + 1}. ${task.status}: ${goal}${task.goal.length > 42 ? "..." : ""} -> ${result}${task.result.length > 42 ? "..." : ""}`;
+      })
+      .join("\n");
+  }
+
+  function extractSubagentTasks(sessionMessages: ChatMessage[]): Array<{ goal: string; result: string; status: string }> {
+    const tasks: Array<{ goal: string; result: string; status: string }> = [];
+    for (let index = 0; index < sessionMessages.length; index += 1) {
+      const message = sessionMessages[index];
+      if (message.role !== "tool" || message.name !== "spawn_subagent") {
+        continue;
+      }
+
+      const nextAssistant = sessionMessages.slice(index + 1).find((item) => item.role === "assistant");
+      const goalLine = message.content.split("\n").find((line) => line.startsWith("Subagent final:")) ?? "";
+      const result = goalLine.replace(/^Subagent final:\s*/i, "").trim() || message.content.trim();
+      const status = message.content.includes("Subagent tools used:") ? "done" : "queued";
+      tasks.push({
+        goal: nextAssistant?.content.trim() || "Delegated task",
+        result: result || "No result",
+        status,
+      });
+    }
+
+    return tasks;
+  }
+
   function formatTimestampWithOffset(date: Date): string {
     const pad = (value: number) => String(Math.abs(Math.trunc(value))).padStart(2, "0");
     const year = date.getFullYear();
@@ -1627,6 +1675,8 @@ function pathBasename(value: string): string {
           <Text>
             <Text color="cyanBright">/status</Text>
             <Text color="yellow">, </Text>
+            <Text color="cyanBright">/tasks</Text>
+            <Text color="yellow">, </Text>
             <Text color="cyanBright">/resume</Text>
             <Text color="yellow">, </Text>
             <Text color="cyanBright">/skill</Text>
@@ -1645,6 +1695,18 @@ function pathBasename(value: string): string {
             <Text color="yellow"> install </Text>
             <Text color="white">{"<path-or-github-url>"}</Text>
           </Text>
+          <Text>
+            <Text color="cyanBright">git</Text>
+            <Text color="yellow"> status/diff/log/add/commit</Text>
+          </Text>
+          <Text>
+            <Text color="cyanBright">web</Text>
+            <Text color="yellow"> search/fetch</Text>
+          </Text>
+          <Text>
+            <Text color="cyanBright">subagent</Text>
+            <Text color="yellow"> spawn_subagent</Text>
+          </Text>
           <Text color="magentaBright" bold>
             Policy
           </Text>
@@ -1657,7 +1719,11 @@ function pathBasename(value: string): string {
           <Text color="greenBright" bold>
             Index
           </Text>
-          <Text color="greenBright">{workspaceIndexSummary}</Text>
+            <Text color="greenBright">{workspaceIndexSummary}</Text>
+          <Text color="greenBright" bold>
+            Subagents
+          </Text>
+          <Text color="greenBright">{formatSubagentTasks(subagentTasks)}</Text>
           <Text color="greenBright" bold>
             Recent activity
           </Text>
