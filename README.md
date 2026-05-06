@@ -16,6 +16,7 @@ minimax-tui
 ```
 
 On first launch, `minimax-tui` will open the interactive setup flow if `~/.minimax-tui/setting.json` does not yet have an API key.
+Every launch starts a new conversation session. Use `/resume <session-id>` inside the TUI to jump back to an older session, or `minimax-tui sessions list` to see recent session ids.
 
 ### Config
 
@@ -42,10 +43,18 @@ minimax-tui config path
 
 ### History
 
-The TUI saves your current conversation locally and restores it on the next launch.
+The TUI saves all conversation sessions locally.
 
 ```bash
 minimax-tui history clear
+minimax-tui sessions list
+```
+
+Inside the TUI:
+
+```text
+/resume <session-id>
+/sessions
 ```
 
 ### One-off Flags

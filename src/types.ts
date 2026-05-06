@@ -30,3 +30,24 @@ export interface ConversationState {
   messages: ChatMessage[];
   updatedAt: string;
 }
+
+export interface ConversationSession {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ChatMessage[];
+}
+
+export interface ConversationStore {
+  currentSessionId: string;
+  sessions: ConversationSession[];
+}
+
+export interface ConversationSessionSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}

@@ -3,14 +3,21 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { streamChatCompletion } from "../api/minimax.js";
 import {
   getSettingPath,
-  loadConversationState,
-  saveConversationState,
+  listConversationSessions,
+  loadConversationSession,
+  resetConversationSession,
+  saveConversationSession,
 } from "../storage.js";
-import type { AppConfig, ChatMessage, StoredConfig } from "../types.js";
+import type {
+  AppConfig,
+  ChatMessage,
+  ConversationSession,
+  StoredConfig,
+} from "../types.js";
 
 interface AppProps {
   config: AppConfig;
-  initialMessages: ChatMessage[];
+  initialSession: ConversationSession;
   onConfigChange: (patch: Partial<StoredConfig>) => Promise<void>;
 }
 
@@ -21,11 +28,12 @@ interface PaletteAction {
   run: () => Promise<void>;
 }
 
-export function App({ config, initialMessages, onConfigChange }: AppProps) {
+export function App({ config, initialSession, onConfigChange }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const [draft, setDraft] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  const [activeSession, setActiveSession] = useState<ConversationSession>(initialSession);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialSession.messages);
   const [status, setStatus] = useState("Ready");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -74,16 +82,28 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         label: "Clear conversation",
         description: "Remove the current session history.",
         run: async () => {
-          abortRef.current?.abort();
-          setMessages([]);
-          setScrollOffset(0);
-          setIsPinnedToBottom(true);
-          await saveConversationState({
-            messages: [],
-            updatedAt: new Date().toISOString(),
-          });
+          await clearCurrentSession();
           setStatus("Conversation cleared");
-          setNotice("History removed from local session file");
+          setNotice("Current session cleared");
+        },
+      },
+      {
+        group: "Session",
+        label: "Show sessions",
+        description: "List recent saved sessions.",
+        run: async () => {
+          const sessions = await listConversationSessions();
+          if (sessions.length === 0) {
+            setStatus("No sessions yet");
+            setNotice("No saved sessions yet.");
+            return;
+          }
+
+          const lines = sessions.slice(0, 5).map((session) => {
+            return `${session.id} | ${session.title} | ${session.messageCount} msgs | ${session.updatedAt}`;
+          });
+          setStatus("Session list");
+          setNotice(lines.join("\n"));
         },
       },
       {
@@ -102,7 +122,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear",
+            "Commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear /resume <id> /sessions",
           );
         },
       },
@@ -250,6 +270,8 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     ];
   }, [runtimeConfig, sanitizedMessages]);
 
+  const sessionTitle = useMemo(() => buildSessionTitle(sanitizedMessages), [sanitizedMessages]);
+
   const viewport = useMemo(() => {
     return calculateViewport({
       rows: stdout.rows ?? 24,
@@ -271,14 +293,16 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   }, [sanitizedMessages, scrollOffset, viewport.pageSize]);
 
   useEffect(() => {
-    void saveConversationState({
+    void saveConversationSession({
+      ...activeSession,
+      title: sessionTitle,
       messages: sanitizedMessages,
       updatedAt: new Date().toISOString(),
     }).catch((cause) => {
       const message = cause instanceof Error ? cause.message : String(cause);
       setError(`Failed to save session: ${message}`);
     });
-  }, [sanitizedMessages]);
+  }, [activeSession, sanitizedMessages, sessionTitle]);
 
   useEffect(() => {
     const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
@@ -382,7 +406,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear",
+          "Commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear /resume <id> /sessions",
         );
         setStatus("Command help");
         return;
@@ -464,17 +488,38 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         setNotice("System prompt updated and saved to setting.json");
         return;
       case "clear":
-        abortRef.current?.abort();
-        setMessages([]);
-        setScrollOffset(0);
-        setIsPinnedToBottom(true);
-        await saveConversationState({
-          messages: [],
-          updatedAt: new Date().toISOString(),
-        });
+        await clearCurrentSession();
         setStatus("Conversation cleared");
-        setNotice("History removed from local session file");
+        setNotice("Current session cleared");
         return;
+      case "resume":
+        if (!argument) {
+          const sessions = await listConversationSessions();
+          if (sessions.length === 0) {
+            setStatus("No sessions yet");
+            setNotice("No saved sessions yet.");
+            return;
+          }
+
+          setStatus("Session list");
+          setNotice(formatSessionList(sessions.slice(0, 5)));
+          return;
+        }
+
+        await resumeSession(argument);
+        return;
+      case "sessions": {
+        const sessions = await listConversationSessions();
+        if (sessions.length === 0) {
+          setStatus("No sessions yet");
+          setNotice("No saved sessions yet.");
+          return;
+        }
+
+        setStatus("Session list");
+        setNotice(formatSessionList(sessions.slice(0, 5)));
+        return;
+      }
       case "config":
         setStatus("Run `minimax-tui config` for interactive settings");
         setNotice("Use the config command to open the full settings wizard.");
@@ -488,13 +533,59 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   async function restoreConversation(): Promise<void> {
     setError(null);
     setNotice(null);
-    const session = await loadConversationState();
+    const session = await loadConversationSession(activeSession.id);
+    if (!session) {
+      setError("Current session not found on disk.");
+      setStatus("Session missing");
+      return;
+    }
+
+    setActiveSession(session);
     const nextMessages = sanitizeMessages(session.messages);
     setMessages(nextMessages);
     setScrollOffset(Math.max(0, nextMessages.length - viewport.pageSize));
     setIsPinnedToBottom(true);
     setStatus("Conversation restored");
-    setNotice("Reloaded the last saved session from disk");
+    setNotice(`Reloaded session ${session.id}`);
+  }
+
+  async function clearCurrentSession(): Promise<void> {
+    abortRef.current?.abort();
+    const cleared = await resetConversationSession(activeSession.id);
+    if (!cleared) {
+      setError("Current session not found on disk.");
+      setStatus("Session missing");
+      return;
+    }
+
+    setActiveSession(cleared);
+    setMessages([]);
+    setScrollOffset(0);
+    setIsPinnedToBottom(true);
+    setPromptHistory([]);
+    setHistoryCursor(null);
+    setDraft("");
+  }
+
+  async function resumeSession(sessionId: string): Promise<void> {
+    abortRef.current?.abort();
+    const session = await loadConversationSession(sessionId);
+    if (!session) {
+      setError(`Session not found: ${sessionId}`);
+      setStatus("Resume failed");
+      return;
+    }
+
+    setActiveSession(session);
+    const nextMessages = sanitizeMessages(session.messages);
+    setMessages(nextMessages);
+    setScrollOffset(Math.max(0, nextMessages.length - viewport.pageSize));
+    setIsPinnedToBottom(true);
+    setPromptHistory([]);
+    setHistoryCursor(null);
+    setDraft("");
+    setStatus(`Resumed ${session.id}`);
+    setNotice(`Active session: ${session.title}`);
   }
 
   function recallPrompt(direction: -1 | 1): void {
@@ -584,6 +675,25 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     setPaletteQuery("");
   }
 
+  function formatSessionList(
+    sessions: Array<{ id: string; title: string; messageCount: number; updatedAt: string }>,
+  ): string {
+    return sessions
+      .map((session) => `${session.id} | ${session.title} | ${session.messageCount} msgs | ${session.updatedAt}`)
+      .join("\n");
+  }
+
+  function buildSessionTitle(sessionMessages: ChatMessage[]): string {
+    const firstUserMessage = sessionMessages.find((message) => message.role === "user")?.content.trim();
+    const candidate = firstUserMessage ?? sessionMessages[0]?.content.trim() ?? "";
+    if (!candidate) {
+      return "New session";
+    }
+
+    const normalized = candidate.replace(/\s+/g, " ");
+    return Array.from(normalized).slice(0, 32).join("");
+  }
+
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
       <Box flexDirection="column" marginBottom={1}>
@@ -591,7 +701,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
           minimax-tui
         </Text>
         <Text dimColor>
-          Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | {status}
+          Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | Session: {sessionTitle} ({activeSession.id.slice(0, 8)}) | {status}
         </Text>
         <Text dimColor>
           Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, /help for commands, Ctrl+C to exit
@@ -823,10 +933,10 @@ function normalizeBaseUrl(value: string): string {
 
 function renderDraft(draft: string, columns: number): React.ReactNode {
   const cleanDraft = sanitizeDraftInput(draft);
-  const innerWidth = Math.max(1, columns - 4);
+  const innerWidth = Math.max(1, columns - 6);
   const lines = cleanDraft.length > 0 ? cleanDraft.split("\n") : [""];
   return lines.map((line, index) => (
-    <Text key={`${index}-${line}`}>
+    <Text key={`${index}-${line}`} wrap="truncate-end">
       {padDraftLine(index === lines.length - 1 ? `${line}█` : line, innerWidth)}
     </Text>
   ));

@@ -10,8 +10,10 @@ import { App } from "./ui/App.js";
 import { ConfigWizard } from "./ui/ConfigWizard.js";
 import {
   clearConversationState,
+  createConversationSession,
   getSettingPath,
-  loadConversationState,
+  listConversationSessions,
+  loadConversationSession,
   loadStoredConfig,
   saveStoredConfig,
 } from "./storage.js";
@@ -27,6 +29,8 @@ Usage:
   minimax-tui config list
   minimax-tui config get <key>
   minimax-tui config set <key> <value>
+  minimax-tui sessions list
+  minimax-tui sessions resume <session-id>
   minimax-tui history clear
 `);
 }
@@ -52,6 +56,11 @@ async function main(): Promise<void> {
 
   if (command === "history") {
     await handleHistoryCommand(argv.slice(1));
+    return;
+  }
+
+  if (command === "sessions") {
+    await handleSessionsCommand(argv.slice(1));
     return;
   }
 
@@ -82,11 +91,11 @@ async function main(): Promise<void> {
 }
 
 async function startChat(config: AppConfig) {
-  const session = await loadConversationState();
+  const session = await createConversationSession();
   render(
     React.createElement(App, {
       config,
-      initialMessages: session.messages,
+      initialSession: session,
       onConfigChange: async (patch) => {
         const current = await loadStoredConfig();
         await saveStoredConfig({ ...current, ...patch });
@@ -171,4 +180,41 @@ async function handleHistoryCommand(args: string[]): Promise<void> {
   }
 
   throw new Error("Usage: minimax-tui history clear");
+}
+
+async function handleSessionsCommand(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  if (!subcommand || subcommand === "list") {
+    const sessions = await listConversationSessions();
+    if (sessions.length === 0) {
+      process.stdout.write("No saved sessions yet.\n");
+      return;
+    }
+
+    for (const session of sessions) {
+      process.stdout.write(
+        `${session.id}\t${session.title}\t${session.messageCount} messages\t${session.updatedAt}\n`,
+      );
+    }
+    return;
+  }
+
+  if (subcommand === "resume") {
+    const sessionId = args[1];
+    if (!sessionId) {
+      throw new Error("Usage: minimax-tui sessions resume <session-id>");
+    }
+
+    const session = await loadConversationSession(sessionId);
+    if (!session) {
+      throw new Error(`Session not found: ${sessionId}`);
+    }
+
+    process.stdout.write(
+      `${session.id}\t${session.title}\t${session.messages.length} messages\t${session.updatedAt}\n`,
+    );
+    return;
+  }
+
+  throw new Error("Usage: minimax-tui sessions [list|resume <session-id>]");
 }
