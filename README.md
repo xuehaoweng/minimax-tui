@@ -16,7 +16,7 @@ minimax-tui
 ```
 
 On first launch, `minimax-tui` will open the interactive setup flow if `~/.minimax-tui/setting.json` does not yet have an API key.
-Every launch starts a new conversation session. Use `/resume <session-id>` inside the TUI to jump back to an older session, or `minimax-tui sessions list` to see recent session ids.
+Every launch starts a new conversation session. Use `/resume` inside the TUI to open a session picker, or `/resume <session-id>` to jump directly to a saved session.
 
 ### Config
 
@@ -56,6 +56,8 @@ Inside the TUI:
 /resume <session-id>
 /sessions
 ```
+
+Typing `/resume` without an argument opens the interactive session picker.
 
 ### One-off Flags
 

@@ -12,6 +12,7 @@ import type {
   AppConfig,
   ChatMessage,
   ConversationSession,
+  ConversationSessionSummary,
   StoredConfig,
 } from "../types.js";
 
@@ -43,6 +44,10 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteGroup, setPaletteGroup] = useState<string | null>(null);
+  const [isSessionPickerOpen, setIsSessionPickerOpen] = useState(false);
+  const [sessionPickerIndex, setSessionPickerIndex] = useState(0);
+  const [sessionSummaries, setSessionSummaries] = useState<ConversationSessionSummary[]>([]);
+  const [sessionPickerLoading, setSessionPickerLoading] = useState(false);
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -90,20 +95,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       {
         group: "Session",
         label: "Show sessions",
-        description: "List recent saved sessions.",
+        description: "Open the session picker.",
         run: async () => {
-          const sessions = await listConversationSessions();
-          if (sessions.length === 0) {
-            setStatus("No sessions yet");
-            setNotice("No saved sessions yet.");
-            return;
-          }
-
-          const lines = sessions.slice(0, 5).map((session) => {
-            return `${session.id} | ${session.title} | ${session.messageCount} msgs | ${session.updatedAt}`;
-          });
-          setStatus("Session list");
-          setNotice(lines.join("\n"));
+          await openSessionPicker();
         },
       },
       {
@@ -122,7 +116,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear /resume <id> /sessions",
+            "Slash commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear /resume /sessions",
           );
         },
       },
@@ -160,6 +154,45 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
     if (key.ctrl && input === "n") {
       recallPrompt(1);
+      return;
+    }
+
+    if (isSessionPickerOpen) {
+      if (key.escape) {
+        closeSessionPicker();
+        setStatus("Resume cancelled");
+        return;
+      }
+
+      if (key.pageUp) {
+        setSessionPickerIndex((current) => Math.max(0, current - 5));
+        return;
+      }
+
+      if (key.pageDown) {
+        setSessionPickerIndex((current) => Math.min(sessionSummaries.length - 1, current + 5));
+        return;
+      }
+
+      if (key.upArrow) {
+        setSessionPickerIndex((current) => Math.max(0, current - 1));
+        return;
+      }
+
+      if (key.downArrow) {
+        setSessionPickerIndex((current) => Math.min(sessionSummaries.length - 1, current + 1));
+        return;
+      }
+
+      if (key.return) {
+        const selected = sessionSummaries[sessionPickerIndex];
+        if (selected) {
+          closeSessionPicker();
+          void resumeSession(selected.id);
+        }
+        return;
+      }
+
       return;
     }
 
@@ -277,8 +310,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       rows: stdout.rows ?? 24,
       draft,
       paletteOpen: isPaletteOpen,
+      sessionPickerOpen: isSessionPickerOpen,
     });
-  }, [draft, isPaletteOpen, stdout.rows]);
+  }, [draft, isPaletteOpen, isSessionPickerOpen, stdout.rows]);
 
   const visibleMessages = useMemo(() => {
     const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
@@ -291,6 +325,14 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       maxOffset,
     };
   }, [sanitizedMessages, scrollOffset, viewport.pageSize]);
+
+  useEffect(() => {
+    if (!isSessionPickerOpen) {
+      return;
+    }
+
+    void refreshSessionPicker();
+  }, [isSessionPickerOpen]);
 
   useEffect(() => {
     void saveConversationSession({
@@ -494,30 +536,14 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         return;
       case "resume":
         if (!argument) {
-          const sessions = await listConversationSessions();
-          if (sessions.length === 0) {
-            setStatus("No sessions yet");
-            setNotice("No saved sessions yet.");
-            return;
-          }
-
-          setStatus("Session list");
-          setNotice(formatSessionList(sessions.slice(0, 5)));
+          await openSessionPicker();
           return;
         }
 
         await resumeSession(argument);
         return;
       case "sessions": {
-        const sessions = await listConversationSessions();
-        if (sessions.length === 0) {
-          setStatus("No sessions yet");
-          setNotice("No saved sessions yet.");
-          return;
-        }
-
-        setStatus("Session list");
-        setNotice(formatSessionList(sessions.slice(0, 5)));
+        await openSessionPicker();
         return;
       }
       case "config":
@@ -565,6 +591,15 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     setPromptHistory([]);
     setHistoryCursor(null);
     setDraft("");
+  }
+
+  async function openSessionPicker(): Promise<void> {
+    setError(null);
+    setNotice(null);
+    setIsSessionPickerOpen(true);
+    setSessionPickerLoading(true);
+    setStatus("Choose a session");
+    setNotice("Use Up/Down and Enter to resume.");
   }
 
   async function resumeSession(sessionId: string): Promise<void> {
@@ -640,6 +675,19 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     }
   }, [paletteActions, paletteGroup]);
 
+  useEffect(() => {
+    if (sessionSummaries.length === 0) {
+      if (sessionPickerIndex !== 0) {
+        setSessionPickerIndex(0);
+      }
+      return;
+    }
+
+    if (sessionPickerIndex >= sessionSummaries.length) {
+      setSessionPickerIndex(sessionSummaries.length - 1);
+    }
+  }, [sessionPickerIndex, sessionSummaries.length]);
+
   async function applyMode(mode: AppConfig["mode"]): Promise<void> {
     const nextConfig = { ...runtimeConfig, mode };
     setRuntimeConfig(nextConfig);
@@ -683,6 +731,34 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       .join("\n");
   }
 
+  async function refreshSessionPicker(): Promise<void> {
+    setSessionPickerLoading(true);
+    try {
+      const sessions = await listConversationSessions();
+      setSessionSummaries(sessions);
+      if (sessions.length === 0) {
+        setSessionPickerIndex(0);
+        setStatus("No sessions yet");
+        setNotice("No saved sessions yet.");
+        return;
+      }
+
+      const currentIndex = sessions.findIndex((session) => session.id === activeSession.id);
+      setSessionPickerIndex(currentIndex >= 0 ? currentIndex : 0);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(message);
+      setStatus("Session picker error");
+    } finally {
+      setSessionPickerLoading(false);
+    }
+  }
+
+  function closeSessionPicker(): void {
+    setIsSessionPickerOpen(false);
+    setSessionPickerLoading(false);
+  }
+
   function buildSessionTitle(sessionMessages: ChatMessage[]): string {
     const firstUserMessage = sessionMessages.find((message) => message.role === "user")?.content.trim();
     const candidate = firstUserMessage ?? sessionMessages[0]?.content.trim() ?? "";
@@ -701,10 +777,16 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           minimax-tui
         </Text>
         <Text dimColor>
-          Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | Session: {sessionTitle} ({activeSession.id.slice(0, 8)}) | {status}
+          Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | Session: {sessionTitle} ({activeSession.id.slice(0, 8)})
         </Text>
         <Text dimColor>
-          Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, /help for commands, Ctrl+C to exit
+          Status: {status}
+        </Text>
+        <Text dimColor>
+          Slash: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions
+        </Text>
+        <Text dimColor>
+          Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, Ctrl+K for palette, Ctrl+C to exit
         </Text>
       </Box>
 
@@ -757,9 +839,53 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           {renderDraft(draft, stdout.columns ?? 80)}
         </Box>
         <Text dimColor>
-          PgUp/PgDn or Up/Down to scroll message history.
+          PgUp/PgDn or Up/Down to scroll message history. Type /resume to pick a saved session.
         </Text>
       </Box>
+
+      {isSessionPickerOpen ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="yellow">
+          <Box paddingX={1}>
+            <Text color="yellowBright" bold>
+              Resume Session
+            </Text>
+          </Box>
+          <Box paddingX={1}>
+            <Text dimColor>
+              {sessionPickerLoading ? "Loading sessions..." : `${sessionSummaries.length} saved session(s)`}
+            </Text>
+          </Box>
+          {sessionSummaries.length === 0 ? (
+            <Box paddingX={1} paddingBottom={1}>
+              <Text dimColor>No saved sessions yet.</Text>
+            </Box>
+          ) : (
+            sessionSummaries.slice(0, 8).map((session, index) => {
+              const selected = index === sessionPickerIndex;
+              return (
+                <Box key={session.id} paddingX={1}>
+                  <Text
+                    color={selected ? "black" : "yellowBright"}
+                    backgroundColor={selected ? "yellow" : undefined}
+                    bold={selected}
+                  >
+                    {selected ? ">" : " "} /resume {session.id.slice(0, 8)}
+                  </Text>
+                  <Text dimColor>
+                    {" "}
+                    {session.title} | {session.messageCount} msgs | {session.updatedAt}
+                  </Text>
+                </Box>
+              );
+            })
+          )}
+          <Box paddingX={1} paddingBottom={1}>
+            <Text dimColor>
+              Up/Down to choose, Enter to resume, Esc to cancel.
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
 
       {isPaletteOpen ? (
         <Box flexDirection="column" marginTop={1} borderStyle="double" borderColor="cyan">
@@ -802,13 +928,15 @@ interface ViewportArgs {
   rows: number;
   draft: string;
   paletteOpen: boolean;
+  sessionPickerOpen: boolean;
 }
 
-function calculateViewport({ rows, draft, paletteOpen }: ViewportArgs): { pageSize: number } {
+function calculateViewport({ rows, draft, paletteOpen, sessionPickerOpen }: ViewportArgs): { pageSize: number } {
   const draftLines = Math.max(1, draft.split("\n").length);
-  const baseChrome = 10;
+  const baseChrome = 12;
   const paletteChrome = paletteOpen ? 9 : 0;
-  const available = rows - baseChrome - paletteChrome - draftLines;
+  const sessionPickerChrome = sessionPickerOpen ? 8 : 0;
+  const available = rows - baseChrome - paletteChrome - sessionPickerChrome - draftLines;
   return {
     pageSize: Math.max(3, Math.floor(available / 2)),
   };
