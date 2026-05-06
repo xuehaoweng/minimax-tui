@@ -134,6 +134,10 @@ export interface WorkspaceIndexContext {
   rootDir: string;
   fileCount: number;
   codeFileCount: number;
+  focusTerms: string[];
+  recentFiles: string[];
+  focusFiles: string[];
+  grepLines: string[];
   treeLines: string[];
   importLines: string[];
   signatureLines: string[];

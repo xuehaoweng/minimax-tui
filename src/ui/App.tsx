@@ -102,6 +102,10 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     rootDir: process.cwd(),
     fileCount: 0,
     codeFileCount: 0,
+    focusTerms: [],
+    recentFiles: [],
+    focusFiles: [],
+    grepLines: [],
     treeLines: [],
     importLines: [],
     signatureLines: [],
@@ -117,6 +121,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       `Root: ${workspaceIndex.rootDir}`,
       `Files: ${workspaceIndex.fileCount}`,
       `Code files: ${workspaceIndex.codeFileCount}`,
+      `Focus: ${workspaceIndex.focusTerms.length === 0 ? "none" : workspaceIndex.focusTerms.join(", ")}`,
       `Tree entries: ${workspaceIndex.treeLines.length}`,
       `Imports: ${workspaceIndex.importLines.length}`,
       `Signatures: ${workspaceIndex.signatureLines.length}`,
@@ -195,7 +200,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Slash commands: /help /status /index /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
+            "Slash commands: /help /status /index [query] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
           );
         },
       },
@@ -217,7 +222,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       {
         kind: "action",
         name: "index",
-        description: "Show the lightweight workspace code index.",
+        description: "Show the workspace index, or grep with a query.",
       },
       {
         kind: "insert",
@@ -624,7 +629,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
   useEffect(() => {
     let alive = true;
-    void loadWorkspaceIndexContext()
+    void loadWorkspaceIndexContext(process.cwd(), "")
       .then((index) => {
         if (alive) {
           setWorkspaceIndex(index);
@@ -737,7 +742,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
     try {
       const freshPolicy = await loadWorkspacePolicyContext();
-      const freshIndex = await loadWorkspaceIndexContext();
+      const freshIndex = await loadWorkspaceIndexContext(process.cwd(), content);
       setWorkspacePolicy(freshPolicy);
       setWorkspaceIndex(freshIndex);
       const requestConversation = [
@@ -821,7 +826,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Slash commands: /help /status /index /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
+          "Slash commands: /help /status /index [query] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
         );
         setStatus("Command help");
         return;
@@ -831,8 +836,11 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         return;
       }
       case "index": {
-        setStatus("Workspace index");
-        setNotice(formatWorkspaceIndexStatus());
+        const query = argument;
+        const freshIndex = await loadWorkspaceIndexContext(process.cwd(), query);
+        setWorkspaceIndex(freshIndex);
+        setStatus(query ? "Workspace grep" : "Workspace index");
+        setNotice(query ? formatWorkspaceGrepStatus(freshIndex) : formatWorkspaceIndexStatus(freshIndex));
         return;
       }
       case "mode": {
@@ -1441,20 +1449,37 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     ].join("\n");
   }
 
-  function formatWorkspaceIndexStatus(): string {
-    const treePreview = workspaceIndex.treeLines.length > 0 ? workspaceIndex.treeLines.slice(0, 12).join("\n") : "No indexed files.";
-    const importPreview = workspaceIndex.importLines.length > 0 ? workspaceIndex.importLines.slice(0, 10).join("\n") : "No imports found.";
-    const signaturePreview = workspaceIndex.signatureLines.length > 0 ? workspaceIndex.signatureLines.slice(0, 10).join("\n") : "No signatures found.";
+  function formatWorkspaceIndexStatus(index = workspaceIndex): string {
+    const treePreview = index.treeLines.length > 0 ? index.treeLines.slice(0, 12).join("\n") : "No indexed files.";
+    const importPreview = index.importLines.length > 0 ? index.importLines.slice(0, 10).join("\n") : "No imports found.";
+    const signaturePreview = index.signatureLines.length > 0 ? index.signatureLines.slice(0, 10).join("\n") : "No signatures found.";
     return [
-      `Root: ${workspaceIndex.rootDir}`,
-      `Files: ${workspaceIndex.fileCount}`,
-      `Code files: ${workspaceIndex.codeFileCount}`,
+      `Root: ${index.rootDir}`,
+      `Files: ${index.fileCount}`,
+      `Code files: ${index.codeFileCount}`,
+      `Focus terms: ${index.focusTerms.length > 0 ? index.focusTerms.join(", ") : "none"}`,
       "Tree:",
       treePreview,
       "Imports:",
       importPreview,
       "Signatures:",
       signaturePreview,
+    ].join("\n");
+  }
+
+  function formatWorkspaceGrepStatus(index = workspaceIndex): string {
+    const focus = index.focusTerms.length > 0 ? index.focusTerms.join(", ") : "none";
+    const recent = index.recentFiles.length > 0 ? index.recentFiles.slice(0, 8).join("\n") : "No recent files.";
+    const focusFiles = index.focusFiles.length > 0 ? index.focusFiles.slice(0, 8).join("\n") : "No focus matches.";
+    const grepLines = index.grepLines.length > 0 ? index.grepLines.slice(0, 12).join("\n") : "No grep matches.";
+    return [
+      `Focus terms: ${focus}`,
+      "Recent files:",
+      recent,
+      "Focus files:",
+      focusFiles,
+      "Grep matches:",
+      grepLines,
     ].join("\n");
   }
 

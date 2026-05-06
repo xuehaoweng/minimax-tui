@@ -10,26 +10,43 @@ export interface WorkspaceIndexContext {
   rootDir: string;
   fileCount: number;
   codeFileCount: number;
+  focusTerms: string[];
+  recentFiles: string[];
+  focusFiles: string[];
+  grepLines: string[];
   treeLines: string[];
   importLines: string[];
   signatureLines: string[];
 }
 
-export async function loadWorkspaceIndexContext(startDir = process.cwd()): Promise<WorkspaceIndexContext> {
+export async function loadWorkspaceIndexContext(
+  startDir = process.cwd(),
+  focusText = "",
+): Promise<WorkspaceIndexContext> {
   const policy = await loadWorkspacePolicyContext(startDir);
   const rootDir = policy.sourcePath ? path.dirname(policy.sourcePath) : path.resolve(startDir);
   const files = await collectWorkspaceFiles(rootDir);
   const codeFiles = files.filter((file) => CODE_FILE_EXTENSIONS.has(path.extname(file).toLowerCase()));
+  const focusTerms = extractFocusTerms(focusText);
   const treeLines = buildTreeLines(rootDir, files);
   const [importLines, signatureLines] = await Promise.all([
     buildImportLines(rootDir, codeFiles),
     buildSignatureLines(rootDir, codeFiles),
+  ]);
+  const [recentFiles, focusFiles, grepLines] = await Promise.all([
+    buildRecentFiles(rootDir, files),
+    buildFocusFiles(rootDir, files, focusTerms),
+    buildGrepLines(rootDir, files, focusTerms),
   ]);
 
   return {
     rootDir,
     fileCount: files.length,
     codeFileCount: codeFiles.length,
+    focusTerms,
+    recentFiles,
+    focusFiles,
+    grepLines,
     treeLines,
     importLines,
     signatureLines,
@@ -44,7 +61,20 @@ export function buildWorkspaceIndexPrompt(index: WorkspaceIndexContext): string 
     `- Root: ${index.rootDir}`,
     `- Files: ${index.fileCount}`,
     `- Code files: ${index.codeFileCount}`,
+    `- Focus terms: ${index.focusTerms.length > 0 ? index.focusTerms.join(", ") : "none"}`,
   ].join("\n"));
+
+  if (index.recentFiles.length > 0) {
+    sections.push(["Recent files:", ...index.recentFiles.map((line) => `- ${line}`)].join("\n"));
+  }
+
+  if (index.focusFiles.length > 0) {
+    sections.push(["Focus files:", ...index.focusFiles.map((line) => `- ${line}`)].join("\n"));
+  }
+
+  if (index.grepLines.length > 0) {
+    sections.push(["Grep matches:", ...index.grepLines.map((line) => `- ${line}`)].join("\n"));
+  }
 
   if (index.treeLines.length > 0) {
     sections.push(["File tree:", ...index.treeLines.map((line) => `- ${line}`)].join("\n"));
@@ -131,6 +161,76 @@ async function buildSignatureLines(rootDir: string, files: string[], maxLines = 
     lines.push(`${relative}: ${signatures.join(" | ")}`);
     if (lines.length >= maxLines) {
       break;
+    }
+  }
+
+  return lines;
+}
+
+async function buildRecentFiles(rootDir: string, files: string[], maxLines = 10): Promise<string[]> {
+  const entries = await Promise.all(
+    files.map(async (file) => {
+      const stat = await fs.stat(file).catch(() => null);
+      return stat
+        ? {
+            file,
+            mtime: stat.mtimeMs,
+          }
+        : null;
+    }),
+  );
+
+  return entries
+    .filter((entry): entry is { file: string; mtime: number } => entry !== null)
+    .sort((left, right) => right.mtime - left.mtime)
+    .slice(0, maxLines)
+    .map((entry) => `${path.relative(rootDir, entry.file)} (${new Date(entry.mtime).toISOString()})`);
+}
+
+async function buildFocusFiles(rootDir: string, files: string[], focusTerms: string[], maxLines = 12): Promise<string[]> {
+  if (focusTerms.length === 0) {
+    return [];
+  }
+
+  const matches: string[] = [];
+  for (const file of files) {
+    const relative = path.relative(rootDir, file);
+    const raw = await fs.readFile(file, "utf8").catch(() => "");
+    const haystack = `${relative}\n${raw}`.toLowerCase();
+    if (focusTerms.some((term) => haystack.includes(term))) {
+      matches.push(relative);
+    }
+    if (matches.length >= maxLines) {
+      break;
+    }
+  }
+
+  return matches;
+}
+
+async function buildGrepLines(rootDir: string, files: string[], focusTerms: string[], maxLines = 20): Promise<string[]> {
+  if (focusTerms.length === 0) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  for (const file of files) {
+    const raw = await fs.readFile(file, "utf8").catch(() => "");
+    if (!raw) {
+      continue;
+    }
+
+    const matches = extractLineMatches(raw, focusTerms);
+    if (matches.length === 0) {
+      continue;
+    }
+
+    const relative = path.relative(rootDir, file);
+    for (const match of matches) {
+      lines.push(`${relative}:${match.line} ${match.snippet}`);
+      if (lines.length >= maxLines) {
+        return lines;
+      }
     }
   }
 
@@ -227,4 +327,32 @@ function normalizeSignatureParams(raw: string): string {
       return name.replace(/\?$/, "").trim();
     })
     .join(", ");
+}
+
+function extractFocusTerms(text: string): string[] {
+  const rawTerms = text
+    .split(/[^A-Za-z0-9_.\/-]+/g)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 3);
+  return Array.from(new Set(rawTerms.map((term) => term.toLowerCase()))).slice(0, 8);
+}
+
+function extractLineMatches(raw: string, focusTerms: string[]): Array<{ line: number; snippet: string }> {
+  const matches: Array<{ line: number; snippet: string }> = [];
+  const lines = raw.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    const lower = line.toLowerCase();
+    if (!focusTerms.some((term) => lower.includes(term))) {
+      continue;
+    }
+
+    const snippet = line.trim().slice(0, 140);
+    matches.push({ line: index + 1, snippet: snippet.length > 0 ? snippet : "(empty)" });
+    if (matches.length >= 3) {
+      break;
+    }
+  }
+
+  return matches;
 }
