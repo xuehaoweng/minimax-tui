@@ -1386,25 +1386,56 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       </Box>
 
       <Box marginBottom={1} borderStyle="double" borderColor="cyan">
-        <Box flexDirection="column" paddingX={1} paddingY={0}>
+        <Box width={18} flexDirection="column" paddingX={1} paddingY={0}>
+          <Text color="cyanBright" bold>
+            MiniMax
+          </Text>
+          <Text color="cyanBright">
+            ▐▛███▜▌
+          </Text>
+          <Text color="cyanBright">
+            ▝▜█████▛▘
+          </Text>
+          <Text color="cyanBright">
+            ▘▘ ▝▝
+          </Text>
+          <Text dimColor>
+            TUI
+          </Text>
+        </Box>
+        <Box flexGrow={1} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
             Welcome back!
           </Text>
           <Text dimColor>
-            Started: {launchTime} | Workspace: {process.cwd()}
+            Started: {launchTime}
           </Text>
           <Text dimColor>
-            Session: {sessionTitle} ({activeSession.id.slice(0, 8)}) | Messages: {messages.length}
+            Workspace: {process.cwd()}
+          </Text>
+          <Text dimColor>
+            Session: {sessionTitle} ({activeSession.id.slice(0, 8)})
+          </Text>
+          <Text dimColor>
+            Messages: {messages.length} | Status: {status}
+          </Text>
+          <Text dimColor>
+            Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model}
+          </Text>
+          <Text dimColor>
+            Active skills: {activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ")}
+          </Text>
+          <Text dimColor>
+            Active plugins: {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
           </Text>
         </Box>
-        <Box flexDirection="column" paddingX={1} paddingY={0}>
+        <Box width={40} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="yellowBright" bold>
             Tips
           </Text>
           <Text dimColor>/status, /resume, /skill list, /plugin list</Text>
-          <Text dimColor>/skill install {"<path-or-github-url>"}, /plugin install {"<path-or-github-url>"}</Text>
-        </Box>
-        <Box flexDirection="column" paddingX={1} paddingY={0}>
+          <Text dimColor>/skill install {"<path-or-github-url>"}</Text>
+          <Text dimColor>/plugin install {"<path-or-github-url>"}</Text>
           <Text color="greenBright" bold>
             Recent activity
           </Text>
