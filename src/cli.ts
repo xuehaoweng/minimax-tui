@@ -8,6 +8,7 @@ import {
 } from "./config.js";
 import { App } from "./ui/App.js";
 import { ConfigWizard } from "./ui/ConfigWizard.js";
+import { initWorkspacePolicyFile } from "./minimax-init.js";
 import {
   clearConversationState,
   createConversationSession,
@@ -43,6 +44,7 @@ Usage:
   minimax-tui plugins remove <name>
   minimax-tui plugins active
   minimax-tui plugins use <name>
+  minimax-tui init
 `);
 }
 
@@ -82,6 +84,11 @@ async function main(): Promise<void> {
 
   if (command === "plugins") {
     await handlePluginsCommand(argv.slice(1));
+    return;
+  }
+
+  if (command === "init") {
+    await handleInitCommand();
     return;
   }
 
@@ -349,4 +356,14 @@ async function handlePluginsCommand(args: string[]): Promise<void> {
   }
 
   throw new Error("Usage: minimax-tui plugins [list|install <path-or-github-url>|remove <name>|active|use <name>]");
+}
+
+async function handleInitCommand(): Promise<void> {
+  const result = await initWorkspacePolicyFile();
+  if (result.created) {
+    process.stdout.write(`Created ${result.path}\n`);
+    return;
+  }
+
+  process.stdout.write(`Already exists: ${result.path}\n`);
 }

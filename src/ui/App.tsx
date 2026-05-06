@@ -18,6 +18,7 @@ import {
   loadPluginRuntimeContext,
   removePlugin,
 } from "../plugins.js";
+import { initWorkspacePolicyFile } from "../minimax-init.js";
 import {
   buildWorkspacePolicyPrompt,
   loadWorkspacePolicyContext,
@@ -153,13 +154,25 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         },
       },
       {
+        group: "Setup",
+        label: "Initialize MINIMAX.md",
+        description: "Create a workspace policy file in the current directory.",
+        run: async () => {
+          const result = await initWorkspacePolicyFile();
+          const policy = await loadWorkspacePolicyContext();
+          setWorkspacePolicy(policy);
+          setStatus(result.created ? "MINIMAX.md created" : "MINIMAX.md already exists");
+          setNotice(`${result.created ? "Created" : "Already exists"}: ${result.path}`);
+        },
+      },
+      {
         group: "Help",
         label: "Show help",
         description: "Display slash commands and shortcuts.",
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Slash commands: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin",
+            "Slash commands: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
           );
         },
       },
@@ -235,6 +248,11 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         kind: "action",
         name: "config",
         description: "Open the persistent settings wizard.",
+      },
+      {
+        kind: "action",
+        name: "init",
+        description: "Create MINIMAX.md in the current workspace.",
       },
       {
         kind: "insert",
@@ -753,7 +771,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Slash commands: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin",
+            "Slash commands: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
         );
         setStatus("Command help");
         return;
@@ -860,6 +878,14 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         setStatus("Run `minimax-tui config` for interactive settings");
         setNotice("Use the config command to open the full settings wizard.");
         return;
+      case "init": {
+        const result = await initWorkspacePolicyFile();
+        const policy = await loadWorkspacePolicyContext();
+        setWorkspacePolicy(policy);
+        setStatus(result.created ? "MINIMAX.md created" : "MINIMAX.md already exists");
+        setNotice(`${result.created ? "Created" : "Already exists"}: ${result.path}`);
+        return;
+      }
       case "skill": {
         const [subcommand, ...skillRest] = argument.split(/\s+/);
         const skillArg = skillRest.join(" ").trim();
@@ -1484,7 +1510,7 @@ function pathBasename(value: string): string {
           <Text color="yellowBright" bold>
             Tips
           </Text>
-          <Text color="yellow">/status, /resume, /skill list, /plugin list</Text>
+          <Text color="yellow">/status, /resume, /skill list, /plugin list, /init</Text>
           <Text color="yellow">/skill install {"<path-or-github-url>"}</Text>
           <Text color="yellow">/plugin install {"<path-or-github-url>"}</Text>
           <Text color="magentaBright" bold>
