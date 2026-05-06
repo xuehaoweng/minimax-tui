@@ -16,8 +16,10 @@ import {
   loadConversationSession,
   loadStoredConfig,
   saveStoredConfig,
+  saveConversationSession,
 } from "./storage.js";
 import { installSkillFromPath, listInstalledSkills, removeSkill } from "./skills.js";
+import { installPluginFromSource, listInstalledPlugins, removePlugin } from "./plugins.js";
 import type { AppConfig } from "./types.js";
 
 function printHelp() {
@@ -36,6 +38,11 @@ Usage:
   minimax-tui skills list
   minimax-tui skills install <path>
   minimax-tui skills remove <name>
+  minimax-tui plugins list
+  minimax-tui plugins install <path-or-github-url>
+  minimax-tui plugins remove <name>
+  minimax-tui plugins active
+  minimax-tui plugins use <name>
 `);
 }
 
@@ -70,6 +77,11 @@ async function main(): Promise<void> {
 
   if (command === "skills") {
     await handleSkillsCommand(argv.slice(1));
+    return;
+  }
+
+  if (command === "plugins") {
+    await handlePluginsCommand(argv.slice(1));
     return;
   }
 
@@ -266,4 +278,75 @@ async function handleSkillsCommand(args: string[]): Promise<void> {
   }
 
   throw new Error("Usage: minimax-tui skills [list|install <path>|remove <name>]");
+}
+
+async function handlePluginsCommand(args: string[]): Promise<void> {
+  const subcommand = args[0];
+  if (!subcommand || subcommand === "list") {
+    const plugins = await listInstalledPlugins();
+    if (plugins.length === 0) {
+      process.stdout.write("No installed plugins yet.\n");
+      return;
+    }
+
+    for (const plugin of plugins) {
+      process.stdout.write(
+        `${plugin.name}\t${plugin.displayName}\t${plugin.skillCount} skills\t${plugin.installedAt}\n`,
+      );
+    }
+    return;
+  }
+
+  if (subcommand === "install") {
+    const sourcePath = args[1];
+    if (!sourcePath) {
+      throw new Error("Usage: minimax-tui plugins install <path-or-github-url>");
+    }
+
+    const plugin = await installPluginFromSource(sourcePath);
+    process.stdout.write(`Installed ${plugin.name}.\n`);
+    return;
+  }
+
+  if (subcommand === "remove") {
+    const name = args[1];
+    if (!name) {
+      throw new Error("Usage: minimax-tui plugins remove <name>");
+    }
+
+    await removePlugin(name);
+    const session = await loadConversationSession();
+    if (session) {
+      const nextActive = (session.activePlugins ?? []).filter((pluginName) => pluginName !== name.toLowerCase());
+      await saveConversationSession({ ...session, activePlugins: nextActive }, true);
+    }
+    process.stdout.write(`Removed ${name}.\n`);
+    return;
+  }
+
+  if (subcommand === "active") {
+    const session = await loadConversationSession();
+    const active = session?.activePlugins ?? [];
+    process.stdout.write(`${active.length === 0 ? "No active plugins." : active.join("\n")}\n`);
+    return;
+  }
+
+  if (subcommand === "use") {
+    const name = args[1];
+    if (!name) {
+      throw new Error("Usage: minimax-tui plugins use <name>");
+    }
+
+    const plugin = await loadConversationSession();
+    if (!plugin) {
+      throw new Error("No current session found.");
+    }
+
+    const nextActive = Array.from(new Set([...(plugin.activePlugins ?? []), name.toLowerCase()]));
+    await saveConversationSession({ ...plugin, activePlugins: nextActive }, true);
+    process.stdout.write(`Activated ${name} in current session.\n`);
+    return;
+  }
+
+  throw new Error("Usage: minimax-tui plugins [list|install <path-or-github-url>|remove <name>|active|use <name>]");
 }

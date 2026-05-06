@@ -94,6 +94,24 @@ export async function loadSkillManifests(names: string[]): Promise<SkillManifest
   return skills;
 }
 
+export async function loadSkillManifestsFromDirectory(rootDir: string): Promise<SkillManifest[]> {
+  const manifestPaths = await findSkillFiles(rootDir);
+  const manifests: SkillManifest[] = [];
+  for (const skillFile of manifestPaths) {
+    const raw = await fs.readFile(skillFile, "utf8");
+    const stat = await fs.stat(skillFile);
+    manifests.push({
+      name: sanitizeSkillName(extractSkillName(raw) ?? path.basename(path.dirname(skillFile))),
+      description: extractSkillDescription(raw) ?? "No description",
+      instructions: raw.trim(),
+      sourcePath: skillFile,
+      installedAt: stat.mtime.toISOString(),
+    });
+  }
+
+  return manifests.sort((left, right) => left.name.localeCompare(right.name));
+}
+
 async function readInstalledSkill(name: string): Promise<SkillManifest> {
   const manifest = await loadSkillManifest(name);
   if (!manifest) {
@@ -134,6 +152,34 @@ async function findSkillFile(rootDir: string): Promise<string | null> {
   }
 
   return null;
+}
+
+async function findSkillFiles(rootDir: string): Promise<string[]> {
+  const results: string[] = [];
+  const direct = path.join(rootDir, "SKILL.md");
+  try {
+    const stat = await fs.stat(direct);
+    if (stat.isFile()) {
+      results.push(direct);
+    }
+  } catch {
+    // Ignore missing direct file.
+  }
+
+  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    if (entry.name === "node_modules" || entry.name === ".git") {
+      continue;
+    }
+
+    results.push(...(await findSkillFiles(path.join(rootDir, entry.name))));
+  }
+
+  return results;
 }
 
 async function resolveSkillSource(source: string): Promise<{ skillRoot: string; cleanup: () => Promise<void> }> {

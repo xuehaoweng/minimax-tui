@@ -50,6 +50,7 @@ export interface ConversationSession {
   updatedAt: string;
   messages: ChatMessage[];
   activeSkills?: string[];
+  activePlugins?: string[];
 }
 
 export interface ConversationStore {
@@ -64,6 +65,7 @@ export interface ConversationSessionSummary {
   updatedAt: string;
   messageCount: number;
   activeSkills?: string[];
+  activePlugins?: string[];
 }
 
 export interface SkillManifest {
@@ -78,4 +80,33 @@ export interface SkillSummary {
   name: string;
   description: string;
   installedAt: string;
+}
+
+export interface PluginManifest {
+  name: string;
+  version?: string;
+  description?: string;
+  repository?: string;
+  homepage?: string;
+  license?: string;
+  skills?: string;
+  hooks?: string;
+  mcpServers?: string;
+  apps?: string;
+  interface?: {
+    displayName?: string;
+    shortDescription?: string;
+    longDescription?: string;
+    developerName?: string;
+    category?: string;
+    defaultPrompt?: string[];
+  };
+}
+
+export interface PluginSummary {
+  name: string;
+  displayName: string;
+  description: string;
+  installedAt: string;
+  skillCount: number;
 }

@@ -10,11 +10,20 @@ import {
   saveConversationSession,
 } from "../storage.js";
 import { installSkillFromPath, listInstalledSkills, loadSkillManifests, removeSkill } from "../skills.js";
+import {
+  installPluginFromSource,
+  listInstalledPlugins,
+  loadPluginManifests,
+  loadPluginSkillManifests,
+  removePlugin,
+} from "../plugins.js";
 import type {
   AppConfig,
   ChatMessage,
   ConversationSession,
   ConversationSessionSummary,
+  PluginManifest,
+  PluginSummary,
   SkillManifest,
   SkillSummary,
   StoredConfig,
@@ -68,10 +77,14 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const [installedSkills, setInstalledSkills] = useState<SkillSummary[]>([]);
   const [activeSkillManifests, setActiveSkillManifests] = useState<SkillManifest[]>([]);
+  const [installedPlugins, setInstalledPlugins] = useState<PluginSummary[]>([]);
+  const [activePluginManifests, setActivePluginManifests] = useState<PluginManifest[]>([]);
+  const [activePluginSkillManifests, setActivePluginSkillManifests] = useState<SkillManifest[]>([]);
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sanitizedMessages = useMemo(() => sanitizeMessages(messages), [messages]);
   const activeSkillNames = useMemo(() => activeSession.activeSkills ?? [], [activeSession.activeSkills]);
+  const activePluginNames = useMemo(() => activeSession.activePlugins ?? [], [activeSession.activePlugins]);
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
     return [
@@ -210,6 +223,12 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         name: "skill",
         template: "/skill ",
         description: "Install, activate, or list skills.",
+      },
+      {
+        kind: "insert",
+        name: "plugin",
+        template: "/plugin ",
+        description: "Install, activate, or list plugins.",
       },
     ];
   }, []);
@@ -467,15 +486,19 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     }
   }, [filteredSlashCommands.length, slashPickerIndex]);
 
+  const activeAssistantManifests = useMemo(() => {
+    return dedupeSkillManifests([...activeSkillManifests, ...activePluginSkillManifests]);
+  }, [activePluginSkillManifests, activeSkillManifests]);
+
   const conversation = useMemo(() => {
     return [
       {
         role: "system" as const,
-        content: composeSystemPrompt(runtimeConfig, activeSkillManifests),
+        content: composeSystemPrompt(runtimeConfig, activeAssistantManifests, activePluginManifests),
       },
       ...sanitizedMessages,
     ];
-  }, [activeSkillManifests, runtimeConfig, sanitizedMessages]);
+  }, [activeAssistantManifests, activePluginManifests, runtimeConfig, sanitizedMessages]);
 
   const viewport = useMemo(() => {
     return calculateViewport({
@@ -514,6 +537,14 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   useEffect(() => {
     void refreshActiveSkillManifests();
   }, [activeSkillNames, installedSkills]);
+
+  useEffect(() => {
+    void refreshInstalledPlugins();
+  }, []);
+
+  useEffect(() => {
+    void refreshActivePluginManifests();
+  }, [activePluginNames, installedPlugins]);
 
   useEffect(() => {
     const draftIsSlashCommand = draft.startsWith("/");
@@ -666,7 +697,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill",
+          "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin",
         );
         setStatus("Command help");
         return;
@@ -853,6 +884,91 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         setStatus("Command error");
         return;
       }
+      case "plugin": {
+        const [subcommand, ...pluginRest] = argument.split(/\s+/);
+        const pluginArg = pluginRest.join(" ").trim();
+        if (!subcommand) {
+          const installed = installedPlugins.length === 0 ? "No installed plugins yet." : formatPluginList(installedPlugins);
+          setStatus("Plugin list");
+          setNotice(
+            [
+              `Installed plugins: ${installedPlugins.length}`,
+              installed,
+              `Active plugins: ${activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}`,
+              "Use /plugin install <path-or-github-url>, /plugin use <name>, /plugin remove <name>, /plugin active.",
+            ].join("\n"),
+          );
+          return;
+        }
+
+        if (subcommand === "list" || subcommand === "active") {
+          const activeText = activePluginNames.length === 0 ? "none" : activePluginNames.join(", ");
+          setStatus("Plugin list");
+          setNotice(
+            [
+              `Installed plugins: ${installedPlugins.length}`,
+              installedPlugins.length === 0 ? "No installed plugins yet." : formatPluginList(installedPlugins),
+              `Active plugins: ${activeText}`,
+            ].join("\n"),
+          );
+          return;
+        }
+
+        if (subcommand === "install") {
+          if (!pluginArg) {
+            setError("Usage: /plugin install <path-or-github-url>");
+            setStatus("Command error");
+            return;
+          }
+
+          const manifest = await installPluginFromSource(pluginArg);
+          await refreshInstalledPlugins();
+          setStatus(`Installed plugin ${manifest.name}`);
+          setNotice(`Plugin installed: ${manifest.name}`);
+          return;
+        }
+
+        if (subcommand === "use") {
+          if (!pluginArg) {
+            setError("Usage: /plugin use <name>");
+            setStatus("Command error");
+            return;
+          }
+
+          const match = installedPlugins.find((plugin) => plugin.name === pluginArg.toLowerCase());
+          if (!match) {
+            setError(`Plugin not installed: ${pluginArg}`);
+            setStatus("Command error");
+            return;
+          }
+
+          const nextActive = Array.from(new Set([...(activeSession.activePlugins ?? []), match.name]));
+          setActiveSession((current) => ({ ...current, activePlugins: nextActive }));
+          setStatus(`Activated plugin ${match.name}`);
+          setNotice(`Active plugins updated: ${nextActive.join(", ")}`);
+          return;
+        }
+
+        if (subcommand === "remove") {
+          if (!pluginArg) {
+            setError("Usage: /plugin remove <name>");
+            setStatus("Command error");
+            return;
+          }
+
+          await removePlugin(pluginArg);
+          const nextActive = (activeSession.activePlugins ?? []).filter((name) => name !== pluginArg.toLowerCase());
+          setActiveSession((current) => ({ ...current, activePlugins: nextActive }));
+          await refreshInstalledPlugins();
+          setStatus(`Removed plugin ${pluginArg}`);
+          setNotice(`Active plugins updated: ${nextActive.join(", ") || "none"}`);
+          return;
+        }
+
+        setError("Usage: /plugin [list|active|install <path-or-github-url>|use <name>|remove <name>]");
+        setStatus("Command error");
+        return;
+      }
       default:
         setError(`Unknown command: /${name}. Try /help.`);
         setStatus("Command error");
@@ -955,6 +1071,32 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       setError(`Failed to load active skills: ${message}`);
       setStatus("Skill load error");
       setActiveSkillManifests([]);
+    }
+  }
+
+  async function refreshInstalledPlugins(): Promise<void> {
+    try {
+      const plugins = await listInstalledPlugins();
+      setInstalledPlugins(plugins);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(`Failed to load plugins: ${message}`);
+      setStatus("Plugin refresh error");
+    }
+  }
+
+  async function refreshActivePluginManifests(): Promise<void> {
+    try {
+      const manifests = await loadPluginManifests(activePluginNames);
+      setActivePluginManifests(manifests);
+      const skillGroups = await Promise.all(manifests.map((manifest) => loadPluginSkillManifests(manifest)));
+      setActivePluginSkillManifests(skillGroups.flat());
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      setError(`Failed to load active plugins: ${message}`);
+      setStatus("Plugin load error");
+      setActivePluginManifests([]);
+      setActivePluginSkillManifests([]);
     }
   }
 
@@ -1132,6 +1274,29 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       .join("\n");
   }
 
+  function formatPluginList(plugins: PluginSummary[]): string {
+    return plugins
+      .map(
+        (plugin) =>
+          `${plugin.name} | ${plugin.displayName} | ${plugin.skillCount} skills | ${plugin.installedAt}`,
+      )
+      .join("\n");
+  }
+
+  function dedupeSkillManifests(manifests: SkillManifest[]): SkillManifest[] {
+    const seen = new Set<string>();
+    const deduped: SkillManifest[] = [];
+    for (const manifest of manifests) {
+      const key = manifest.name.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      deduped.push(manifest);
+    }
+    return deduped;
+  }
+
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
       <Box flexDirection="column" marginBottom={1}>
@@ -1140,6 +1305,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         </Text>
         <Text dimColor>
           Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | Session: {sessionTitle} ({activeSession.id.slice(0, 8)})
+        </Text>
+        <Text dimColor>
+          Plugins: {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
         </Text>
         <Text dimColor>
           Status: {status}
@@ -1446,8 +1614,27 @@ function stripThinkBlocks(text: string): string {
   return output.replace(/<\/?think>/gi, "").trimEnd();
 }
 
-function composeSystemPrompt(config: AppConfig, skills: SkillManifest[]): string {
+function composeSystemPrompt(
+  config: AppConfig,
+  skills: SkillManifest[],
+  plugins: PluginManifest[],
+): string {
   const modePrompt = getModePrompt(config.mode);
+  const pluginPrompt =
+    plugins.length > 0
+      ? [
+          "Active plugins:",
+          ...plugins.map((plugin) => {
+            const displayName = plugin.interface?.displayName ?? plugin.name;
+            const shortDescription = plugin.interface?.shortDescription ?? plugin.description ?? "";
+            const prompts = plugin.interface?.defaultPrompt ?? [];
+            return [
+              `- ${displayName} (${plugin.name})${shortDescription ? `: ${shortDescription}` : ""}`,
+              ...prompts.map((prompt) => `  - ${prompt}`),
+            ].join("\n");
+          }),
+        ].join("\n")
+      : "";
   const skillPrompt =
     skills.length > 0
       ? [
@@ -1455,7 +1642,7 @@ function composeSystemPrompt(config: AppConfig, skills: SkillManifest[]): string
           ...skills.map((skill) => `- ${skill.name}: ${skill.description}\n${skill.instructions}`),
         ].join("\n")
       : "";
-  return [config.systemPrompt.trim(), modePrompt, skillPrompt].filter(Boolean).join("\n\n");
+  return [config.systemPrompt.trim(), modePrompt, pluginPrompt, skillPrompt].filter(Boolean).join("\n\n");
 }
 
 function getModePrompt(mode: AppConfig["mode"]): string {

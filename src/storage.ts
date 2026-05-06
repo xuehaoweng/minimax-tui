@@ -141,6 +141,7 @@ function makeConversationSession(messages: ConversationSession["messages"]): Con
     updatedAt: now,
     messages,
     activeSkills: [],
+    activePlugins: [],
   };
 }
 
@@ -150,6 +151,7 @@ function normalizeSession(session: ConversationSession): ConversationSession {
     title: session.title.trim() || "New session",
     messages: session.messages,
     activeSkills: session.activeSkills ?? [],
+    activePlugins: session.activePlugins ?? [],
     updatedAt: new Date().toISOString(),
   };
 }

@@ -62,6 +62,7 @@ Inside the TUI:
 Typing `/resume` without an argument opens the interactive session picker.
 Typing `/` opens the slash-command chooser.
 Typing `/skill` opens skill management commands such as install/use/remove/list.
+Typing `/plugin` opens plugin management commands such as install/use/remove/list.
 
 ### Skills
 
@@ -83,6 +84,30 @@ Inside the TUI:
 /skill install https://github.com/user/repo
 /skill use skill-name
 /skill remove skill-name
+```
+
+### Plugins
+
+Install and manage local plugins:
+
+```bash
+minimax-tui plugins list
+minimax-tui plugins install ./path/to/plugin
+minimax-tui plugins install https://github.com/user/repo
+minimax-tui plugins remove plugin-name
+minimax-tui plugins active
+minimax-tui plugins use plugin-name
+```
+
+Inside the TUI:
+
+```text
+/plugin
+/plugin list
+/plugin install ./path/to/plugin
+/plugin install https://github.com/user/repo
+/plugin use plugin-name
+/plugin remove plugin-name
 ```
 
 ### One-off Flags
