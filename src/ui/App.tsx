@@ -1,7 +1,11 @@
 import { Box, Text, useApp, useInput } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { streamChatCompletion } from "../api/minimax.js";
-import { getSettingPath, saveConversationState } from "../storage.js";
+import {
+  getSettingPath,
+  loadConversationState,
+  saveConversationState,
+} from "../storage.js";
 import type { AppConfig, ChatMessage, StoredConfig } from "../types.js";
 
 interface AppProps {
@@ -102,6 +106,11 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         setIsPaletteOpen(true);
         setPaletteIndex(0);
       }
+      return;
+    }
+
+    if (key.ctrl && input === "r") {
+      void restoreConversation();
       return;
     }
 
@@ -366,6 +375,15 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         setError(`Unknown command: /${name}. Try /help.`);
         setStatus("Command error");
     }
+  }
+
+  async function restoreConversation(): Promise<void> {
+    setError(null);
+    setNotice(null);
+    const session = await loadConversationState();
+    setMessages(session.messages);
+    setStatus("Conversation restored");
+    setNotice("Reloaded the last saved session from disk");
   }
 
   async function applyMode(mode: AppConfig["mode"]): Promise<void> {
