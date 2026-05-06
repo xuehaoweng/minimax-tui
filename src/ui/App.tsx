@@ -52,6 +52,7 @@ interface SlashCommand {
 export function App({ config, initialSession, onConfigChange }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
+  const [launchTime] = useState(() => formatTimestampWithOffset(new Date()));
   const [draft, setDraft] = useState("");
   const [activeSession, setActiveSession] = useState<ConversationSession>(initialSession);
   const [messages, setMessages] = useState<ChatMessage[]>(initialSession.messages);
@@ -84,6 +85,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const sanitizedMessages = useMemo(() => sanitizeMessages(messages), [messages]);
   const activeSkillNames = useMemo(() => activeSession.activeSkills ?? [], [activeSession.activeSkills]);
   const activePluginNames = useMemo(() => activeSession.activePlugins ?? [], [activeSession.activePlugins]);
+  const recentActivity = useMemo(() => buildRecentActivitySummary(sanitizedMessages), [sanitizedMessages]);
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
     return [
@@ -145,7 +147,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill",
+            "Slash commands: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin",
           );
         },
       },
@@ -158,6 +160,11 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         kind: "action",
         name: "help",
         description: "Show slash command help in the panel.",
+      },
+      {
+        kind: "action",
+        name: "status",
+        description: "Show the current session status.",
       },
       {
         kind: "insert",
@@ -709,10 +716,15 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin",
+          "Slash commands: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin",
         );
         setStatus("Command help");
         return;
+      case "status": {
+        setStatus("Session status");
+        setNotice(formatSessionStatus());
+        return;
+      }
       case "mode": {
         const nextMode = parseMode(argument);
         if (!nextMode) {
@@ -1293,6 +1305,49 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       .join("\n");
   }
 
+  function formatSessionStatus(): string {
+    const activeSkills = activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ");
+    const activePlugins = activePluginNames.length === 0 ? "none" : activePluginNames.join(", ");
+    return [
+      `Mode: ${runtimeConfig.mode}`,
+      `Model: ${runtimeConfig.model}`,
+      `Base URL: ${runtimeConfig.baseUrl}`,
+      `Session: ${sessionTitle} (${activeSession.id})`,
+      `Status: ${status}`,
+      `Active skills: ${activeSkills}`,
+      `Active plugins: ${activePlugins}`,
+      `Messages: ${messages.length}`,
+      `Pinned: ${isPinnedToBottom ? "bottom" : "free"}`,
+    ].join("\n");
+  }
+
+  function buildRecentActivitySummary(sessionMessages: ChatMessage[]): string {
+    const recent = [...sessionMessages].reverse().find((message) => message.content.trim().length > 0);
+    if (!recent) {
+      return "No recent activity";
+    }
+
+    const role = recent.role === "user" ? "You" : recent.role === "assistant" ? "Assistant" : recent.role;
+    const content = sanitizeDisplayText(stripThinkBlocks(recent.content)).replace(/\s+/g, " ").trim();
+    const snippet = Array.from(content).slice(0, 72).join("");
+    return `${role}: ${snippet}${content.length > 72 ? "..." : ""}`;
+  }
+
+  function formatTimestampWithOffset(date: Date): string {
+    const pad = (value: number) => String(Math.abs(Math.trunc(value))).padStart(2, "0");
+    const year = date.getFullYear();
+    const month = pad(date.getMonth() + 1);
+    const day = pad(date.getDate());
+    const hours = pad(date.getHours());
+    const minutes = pad(date.getMinutes());
+    const seconds = pad(date.getSeconds());
+    const offsetMinutes = -date.getTimezoneOffset();
+    const sign = offsetMinutes >= 0 ? "+" : "-";
+    const offsetHours = pad(Math.floor(Math.abs(offsetMinutes) / 60));
+    const offsetMins = pad(Math.abs(offsetMinutes) % 60);
+    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetMins}`;
+  }
+
   function dedupeSkillManifests(manifests: SkillManifest[]): SkillManifest[] {
     const seen = new Set<string>();
     const deduped: SkillManifest[] = [];
@@ -1323,11 +1378,38 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           Status: {status}
         </Text>
         <Text dimColor>
-          Slash: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill
+          Slash: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin
         </Text>
         <Text dimColor>
           Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, Ctrl+K for palette, type / to browse commands, Ctrl+C to exit
         </Text>
+      </Box>
+
+      <Box marginBottom={1} borderStyle="double" borderColor="cyan">
+        <Box flexDirection="column" paddingX={1} paddingY={0}>
+          <Text color="cyanBright" bold>
+            Welcome back!
+          </Text>
+          <Text dimColor>
+            Started: {launchTime} | Workspace: {process.cwd()}
+          </Text>
+          <Text dimColor>
+            Session: {sessionTitle} ({activeSession.id.slice(0, 8)}) | Messages: {messages.length}
+          </Text>
+        </Box>
+        <Box flexDirection="column" paddingX={1} paddingY={0}>
+          <Text color="yellowBright" bold>
+            Tips
+          </Text>
+          <Text dimColor>/status, /resume, /skill list, /plugin list</Text>
+          <Text dimColor>/skill install {"<path-or-github-url>"}, /plugin install {"<path-or-github-url>"}</Text>
+        </Box>
+        <Box flexDirection="column" paddingX={1} paddingY={0}>
+          <Text color="greenBright" bold>
+            Recent activity
+          </Text>
+          <Text dimColor>{recentActivity}</Text>
+        </Box>
       </Box>
 
       {notice ? (
@@ -1526,7 +1608,7 @@ function calculateViewport({
   sessionPickerOpen,
 }: ViewportArgs): { pageSize: number } {
   const draftLines = Math.max(1, draft.split("\n").length);
-  const baseChrome = 12;
+  const baseChrome = 20;
   const paletteChrome = paletteOpen ? 9 : 0;
   const slashPickerChrome = slashPickerOpen ? 8 : 0;
   const sessionPickerChrome = sessionPickerOpen ? 8 : 0;
