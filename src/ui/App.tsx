@@ -550,11 +550,21 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
   useEffect(() => {
     const draftIsSlashCommand = draft.startsWith("/");
+    const draftHasArguments = /^\/\S+\s+/.test(draft);
     const shouldOpen =
-      draftIsSlashCommand && !isPaletteOpen && !isSessionPickerOpen && !isSending && !slashPickerSuppressed;
+      draftIsSlashCommand &&
+      !draftHasArguments &&
+      !isPaletteOpen &&
+      !isSessionPickerOpen &&
+      !isSending &&
+      !slashPickerSuppressed;
 
     if (!draftIsSlashCommand && slashPickerSuppressed) {
       setSlashPickerSuppressed(false);
+    }
+
+    if (draftHasArguments && isSlashPickerOpen) {
+      setIsSlashPickerOpen(false);
     }
 
     if (shouldOpen && !isSlashPickerOpen) {
