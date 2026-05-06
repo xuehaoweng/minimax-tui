@@ -29,6 +29,13 @@ interface PaletteAction {
   run: () => Promise<void>;
 }
 
+interface SlashCommand {
+  name: string;
+  description: string;
+  template?: string;
+  kind: "insert" | "picker" | "action";
+}
+
 export function App({ config, initialSession, onConfigChange }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -44,6 +51,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteGroup, setPaletteGroup] = useState<string | null>(null);
+  const [isSlashPickerOpen, setIsSlashPickerOpen] = useState(false);
+  const [slashPickerIndex, setSlashPickerIndex] = useState(0);
+  const [slashPickerSuppressed, setSlashPickerSuppressed] = useState(false);
   const [isSessionPickerOpen, setIsSessionPickerOpen] = useState(false);
   const [sessionPickerIndex, setSessionPickerIndex] = useState(0);
   const [sessionSummaries, setSessionSummaries] = useState<ConversationSessionSummary[]>([]);
@@ -116,12 +126,80 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Slash commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear /resume /sessions",
+            "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config",
           );
         },
       },
     ];
   }, [applyMode]);
+
+  const slashCommands = useMemo<SlashCommand[]>(() => {
+    return [
+      {
+        kind: "action",
+        name: "help",
+        description: "Show slash command help in the panel.",
+      },
+      {
+        kind: "insert",
+        name: "mode",
+        template: "/mode ",
+        description: "Switch conversation mode.",
+      },
+      {
+        kind: "insert",
+        name: "model",
+        template: "/model ",
+        description: "Set the model name.",
+      },
+      {
+        kind: "insert",
+        name: "baseurl",
+        template: "/baseurl ",
+        description: "Set the API base URL.",
+      },
+      {
+        kind: "insert",
+        name: "temperature",
+        template: "/temperature ",
+        description: "Set sampling temperature.",
+      },
+      {
+        kind: "insert",
+        name: "max",
+        template: "/max ",
+        description: "Set max tokens.",
+      },
+      {
+        kind: "insert",
+        name: "system",
+        template: "/system ",
+        description: "Set the system prompt.",
+      },
+      {
+        kind: "action",
+        name: "clear",
+        description: "Clear the current session.",
+      },
+      {
+        kind: "picker",
+        name: "resume",
+        template: "/resume ",
+        description: "Pick a saved session to resume.",
+      },
+      {
+        kind: "picker",
+        name: "sessions",
+        template: "/sessions",
+        description: "Open the saved session picker.",
+      },
+      {
+        kind: "action",
+        name: "config",
+        description: "Open the persistent settings wizard.",
+      },
+    ];
+  }, []);
 
   useInput((input, key) => {
     if (key.ctrl && input === "c") {
@@ -155,6 +233,55 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     if (key.ctrl && input === "n") {
       recallPrompt(1);
       return;
+    }
+
+    if (isSlashPickerOpen) {
+      if (key.escape) {
+        setIsSlashPickerOpen(false);
+        setSlashPickerSuppressed(true);
+        setStatus("Slash command cancelled");
+        return;
+      }
+
+      if (key.tab) {
+        setSlashPickerIndex((current) =>
+          (current + (key.shift ? -1 : 1) + Math.max(1, filteredSlashCommands.length)) %
+          Math.max(1, filteredSlashCommands.length),
+        );
+        return;
+      }
+
+      if (key.pageUp) {
+        setSlashPickerIndex((current) => Math.max(0, current - 5));
+        return;
+      }
+
+      if (key.pageDown) {
+        setSlashPickerIndex((current) => Math.min(filteredSlashCommands.length - 1, current + 5));
+        return;
+      }
+
+      if (key.upArrow) {
+        setSlashPickerIndex((current) => Math.max(0, current - 1));
+        return;
+      }
+
+      if (key.downArrow) {
+        setSlashPickerIndex((current) => Math.min(filteredSlashCommands.length - 1, current + 1));
+        return;
+      }
+
+      if (key.return) {
+        const selected = filteredSlashCommands[slashPickerIndex];
+        if (selected) {
+          void applySlashCommand(selected);
+        } else {
+          setIsSlashPickerOpen(false);
+          setSlashPickerSuppressed(false);
+          void submitDraft();
+        }
+        return;
+      }
     }
 
     if (isSessionPickerOpen) {
@@ -304,15 +431,48 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   }, [runtimeConfig, sanitizedMessages]);
 
   const sessionTitle = useMemo(() => buildSessionTitle(sanitizedMessages), [sanitizedMessages]);
+  const slashSearch = useMemo(() => {
+    if (!draft.startsWith("/")) {
+      return "";
+    }
+
+    const token = draft.slice(1).trimStart().split(/\s+/)[0] ?? "";
+    return token.toLowerCase();
+  }, [draft]);
+
+  const filteredSlashCommands = useMemo(() => {
+    return slashCommands.filter((command) => {
+      if (!slashSearch) {
+        return true;
+      }
+
+      const haystack = `${command.name} ${command.description}`.toLowerCase();
+      return haystack.includes(slashSearch);
+    });
+  }, [slashCommands, slashSearch]);
+
+  useEffect(() => {
+    if (filteredSlashCommands.length === 0) {
+      if (slashPickerIndex !== 0) {
+        setSlashPickerIndex(0);
+      }
+      return;
+    }
+
+    if (slashPickerIndex >= filteredSlashCommands.length) {
+      setSlashPickerIndex(filteredSlashCommands.length - 1);
+    }
+  }, [filteredSlashCommands.length, slashPickerIndex]);
 
   const viewport = useMemo(() => {
     return calculateViewport({
       rows: stdout.rows ?? 24,
       draft,
       paletteOpen: isPaletteOpen,
+      slashPickerOpen: isSlashPickerOpen,
       sessionPickerOpen: isSessionPickerOpen,
     });
-  }, [draft, isPaletteOpen, isSessionPickerOpen, stdout.rows]);
+  }, [draft, isPaletteOpen, isSessionPickerOpen, isSlashPickerOpen, stdout.rows]);
 
   const visibleMessages = useMemo(() => {
     const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
@@ -333,6 +493,33 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
     void refreshSessionPicker();
   }, [isSessionPickerOpen]);
+
+  useEffect(() => {
+    const draftIsSlashCommand = draft.startsWith("/");
+    const shouldOpen =
+      draftIsSlashCommand && !isPaletteOpen && !isSessionPickerOpen && !isSending && !slashPickerSuppressed;
+
+    if (!draftIsSlashCommand && slashPickerSuppressed) {
+      setSlashPickerSuppressed(false);
+    }
+
+    if (shouldOpen && !isSlashPickerOpen) {
+      setIsSlashPickerOpen(true);
+      setSlashPickerIndex(0);
+      return;
+    }
+
+    if (!shouldOpen && isSlashPickerOpen) {
+      setIsSlashPickerOpen(false);
+    }
+  }, [
+    draft,
+    isPaletteOpen,
+    isSessionPickerOpen,
+    isSending,
+    isSlashPickerOpen,
+    slashPickerSuppressed,
+  ]);
 
   useEffect(() => {
     void saveConversationSession({
@@ -448,7 +635,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Commands: /help /mode chat|plan|agent /model <name> /baseurl <url> /temperature <n> /max <n> /system <text> /clear /resume <id> /sessions",
+          "Slash commands: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config",
         );
         setStatus("Command help");
         return;
@@ -596,10 +783,40 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   async function openSessionPicker(): Promise<void> {
     setError(null);
     setNotice(null);
+    setIsSlashPickerOpen(false);
+    setSlashPickerSuppressed(true);
     setIsSessionPickerOpen(true);
     setSessionPickerLoading(true);
     setStatus("Choose a session");
     setNotice("Use Up/Down and Enter to resume.");
+  }
+
+  async function applySlashCommand(command: SlashCommand): Promise<void> {
+    setError(null);
+    setNotice(null);
+
+    if (command.kind === "insert") {
+      setDraft(command.template ?? `/${command.name} `);
+      setIsSlashPickerOpen(false);
+      setSlashPickerSuppressed(true);
+      setStatus(`Inserted /${command.name}`);
+      setNotice(`Command ready: ${command.template ?? `/${command.name}`}`);
+      return;
+    }
+
+    if (command.kind === "picker") {
+      setIsSlashPickerOpen(false);
+      setSlashPickerSuppressed(true);
+      setDraft("");
+      await openSessionPicker();
+      return;
+    }
+
+    setDraft(command.template ?? `/${command.name}`);
+    setIsSlashPickerOpen(false);
+    setSlashPickerSuppressed(true);
+    setStatus(`Inserted /${command.name}`);
+    setNotice(`Command ready: /${command.name}`);
   }
 
   async function resumeSession(sessionId: string): Promise<void> {
@@ -783,10 +1000,10 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           Status: {status}
         </Text>
         <Text dimColor>
-          Slash: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions
+          Slash: /help /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config
         </Text>
         <Text dimColor>
-          Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, Ctrl+K for palette, Ctrl+C to exit
+          Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, Ctrl+K for palette, type / to browse commands, Ctrl+C to exit
         </Text>
       </Box>
 
@@ -842,6 +1059,52 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           PgUp/PgDn or Up/Down to scroll message history. Type /resume to pick a saved session.
         </Text>
       </Box>
+
+      {isSlashPickerOpen ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="cyan">
+          <Box paddingX={1}>
+            <Text color="cyanBright" bold>
+              Slash Commands
+            </Text>
+          </Box>
+          <Box paddingX={1}>
+            <Text dimColor>
+              {filteredSlashCommands.length === 0
+                ? "No matching commands."
+                : `${filteredSlashCommands.length} command(s) available`}
+            </Text>
+          </Box>
+          {filteredSlashCommands.length === 0 ? (
+            <Box paddingX={1} paddingBottom={1}>
+              <Text dimColor>Try typing more of a command name.</Text>
+            </Box>
+          ) : (
+            filteredSlashCommands.map((command, index) => {
+              const selected = index === slashPickerIndex;
+              return (
+                <Box key={command.name} paddingX={1}>
+                  <Text
+                    color={selected ? "black" : "cyanBright"}
+                    backgroundColor={selected ? "cyan" : undefined}
+                    bold={selected}
+                  >
+                    {selected ? ">" : " "} /{command.name}
+                  </Text>
+                  <Text dimColor>
+                    {" "}
+                    {command.description}
+                  </Text>
+                </Box>
+              );
+            })
+          )}
+          <Box paddingX={1} paddingBottom={1}>
+            <Text dimColor>
+              Up/Down to choose, Enter to insert, Esc to cancel.
+            </Text>
+          </Box>
+        </Box>
+      ) : null}
 
       {isSessionPickerOpen ? (
         <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="yellow">
@@ -928,15 +1191,23 @@ interface ViewportArgs {
   rows: number;
   draft: string;
   paletteOpen: boolean;
+  slashPickerOpen: boolean;
   sessionPickerOpen: boolean;
 }
 
-function calculateViewport({ rows, draft, paletteOpen, sessionPickerOpen }: ViewportArgs): { pageSize: number } {
+function calculateViewport({
+  rows,
+  draft,
+  paletteOpen,
+  slashPickerOpen,
+  sessionPickerOpen,
+}: ViewportArgs): { pageSize: number } {
   const draftLines = Math.max(1, draft.split("\n").length);
   const baseChrome = 12;
   const paletteChrome = paletteOpen ? 9 : 0;
+  const slashPickerChrome = slashPickerOpen ? 8 : 0;
   const sessionPickerChrome = sessionPickerOpen ? 8 : 0;
-  const available = rows - baseChrome - paletteChrome - sessionPickerChrome - draftLines;
+  const available = rows - baseChrome - paletteChrome - slashPickerChrome - sessionPickerChrome - draftLines;
   return {
     pageSize: Math.max(3, Math.floor(available / 2)),
   };

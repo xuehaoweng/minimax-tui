@@ -58,6 +58,7 @@ Inside the TUI:
 ```
 
 Typing `/resume` without an argument opens the interactive session picker.
+Typing `/` opens the slash-command chooser.
 
 ### One-off Flags
 
