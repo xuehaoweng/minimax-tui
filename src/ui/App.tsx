@@ -1,4 +1,4 @@
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { streamChatCompletion } from "../api/minimax.js";
 import {
@@ -23,6 +23,7 @@ interface PaletteAction {
 
 export function App({ config, initialMessages, onConfigChange }: AppProps) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [status, setStatus] = useState("Ready");
@@ -35,6 +36,8 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
   const [paletteQuery, setPaletteQuery] = useState("");
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -71,6 +74,8 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
         run: async () => {
           abortRef.current?.abort();
           setMessages([]);
+          setScrollOffset(0);
+          setIsPinnedToBottom(true);
           await saveConversationState({
             messages: [],
             updatedAt: new Date().toISOString(),
@@ -178,6 +183,26 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       return;
     }
 
+    if (key.pageUp) {
+      scrollMessages(-1, true);
+      return;
+    }
+
+    if (key.pageDown) {
+      scrollMessages(1, true);
+      return;
+    }
+
+    if (key.upArrow) {
+      scrollMessages(-1);
+      return;
+    }
+
+    if (key.downArrow) {
+      scrollMessages(1);
+      return;
+    }
+
     if (key.return) {
       if (key.shift) {
         setDraft((current) => `${current}\n`);
@@ -214,6 +239,26 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     ];
   }, [messages, runtimeConfig]);
 
+  const viewport = useMemo(() => {
+    return calculateViewport({
+      rows: stdout.rows ?? 24,
+      draft,
+      paletteOpen: isPaletteOpen,
+    });
+  }, [draft, isPaletteOpen, stdout.rows]);
+
+  const visibleMessages = useMemo(() => {
+    const maxOffset = Math.max(0, messages.length - viewport.pageSize);
+    const start = Math.min(scrollOffset, maxOffset);
+    const end = start + viewport.pageSize;
+    return {
+      start,
+      end: Math.min(end, messages.length),
+      items: messages.slice(start, end),
+      maxOffset,
+    };
+  }, [messages, scrollOffset, viewport.pageSize]);
+
   useEffect(() => {
     void saveConversationState({
       messages,
@@ -223,6 +268,18 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       setError(`Failed to save session: ${message}`);
     });
   }, [messages]);
+
+  useEffect(() => {
+    const maxOffset = Math.max(0, messages.length - viewport.pageSize);
+    if (isPinnedToBottom) {
+      setScrollOffset(maxOffset);
+      return;
+    }
+
+    if (scrollOffset > maxOffset) {
+      setScrollOffset(maxOffset);
+    }
+  }, [isPinnedToBottom, messages.length, scrollOffset, viewport.pageSize]);
 
   const submitDraft = async () => {
     const content = draft.trim();
@@ -243,6 +300,7 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     setPromptHistory((current) => [...current, content]);
     setHistoryCursor(null);
     setDraft("");
+    setIsPinnedToBottom(true);
     setMessages((current) => {
       const next = [
         ...current,
@@ -397,6 +455,8 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       case "clear":
         abortRef.current?.abort();
         setMessages([]);
+        setScrollOffset(0);
+        setIsPinnedToBottom(true);
         await saveConversationState({
           messages: [],
           updatedAt: new Date().toISOString(),
@@ -419,6 +479,8 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     setNotice(null);
     const session = await loadConversationState();
     setMessages(session.messages);
+    setScrollOffset(Math.max(0, session.messages.length - viewport.pageSize));
+    setIsPinnedToBottom(true);
     setStatus("Conversation restored");
     setNotice("Reloaded the last saved session from disk");
   }
@@ -471,6 +533,23 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
     setNotice("Mode updated and saved to setting.json");
   }
 
+  function scrollMessages(direction: -1 | 1, usePage = false): void {
+    const step = usePage ? Math.max(1, viewport.pageSize - 1) : Math.max(1, Math.floor(viewport.pageSize / 2));
+    const maxOffset = Math.max(0, messages.length - viewport.pageSize);
+    setIsPinnedToBottom(false);
+    setScrollOffset((current) => {
+      const next = current + step * direction;
+      if (next < 0) {
+        return 0;
+      }
+      if (next > maxOffset) {
+        setIsPinnedToBottom(true);
+        return maxOffset;
+      }
+      return next;
+    });
+  }
+
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
       <Box flexDirection="column" marginBottom={1}>
@@ -498,11 +577,20 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       ) : null}
 
       <Box flexDirection="column" marginBottom={1}>
-        {messages.map((message, index) => {
+        <Text dimColor>
+          Messages{" "}
+          {messages.length === 0 ? "0-0" : `${visibleMessages.start + 1}-${visibleMessages.end}`} /{" "}
+          {messages.length}
+          {visibleMessages.end < messages.length ? " (more below)" : ""}
+        </Text>
+      </Box>
+
+      <Box flexDirection="column" marginBottom={1}>
+        {visibleMessages.items.map((message, index) => {
           const isAssistant = message.role === "assistant";
           const label = isAssistant ? "assistant" : "you";
           return (
-            <Box key={`${label}-${index}`} flexDirection="column">
+            <Box key={`${label}-${visibleMessages.start + index}`} flexDirection="column">
               <Text color={isAssistant ? "green" : "yellow"} bold>
                 {label}
               </Text>
@@ -541,6 +629,22 @@ export function App({ config, initialMessages, onConfigChange }: AppProps) {
       ) : null}
     </Box>
   );
+}
+
+interface ViewportArgs {
+  rows: number;
+  draft: string;
+  paletteOpen: boolean;
+}
+
+function calculateViewport({ rows, draft, paletteOpen }: ViewportArgs): { pageSize: number } {
+  const draftLines = Math.max(1, draft.split("\n").length);
+  const baseChrome = 10;
+  const paletteChrome = paletteOpen ? 9 : 0;
+  const available = rows - baseChrome - paletteChrome - draftLines;
+  return {
+    pageSize: Math.max(3, Math.floor(available / 2)),
+  };
 }
 
 function composeSystemPrompt(config: AppConfig): string {
