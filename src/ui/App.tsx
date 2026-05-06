@@ -1432,54 +1432,38 @@ function pathBasename(value: string): string {
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Box flexDirection="column" marginBottom={1}>
-        <Text color="cyanBright" bold>
-          minimax-tui
-        </Text>
-        <Text dimColor>
-          Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | Session: {sessionTitle} ({activeSession.id.slice(0, 8)})
-        </Text>
-        <Text dimColor>
-          Plugins: {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
-        </Text>
-        <Text dimColor>
-          Policy: {workspacePolicy.sourcePath ?? "MINIMAX.md not found"}
-        </Text>
-        <Text dimColor>
-          Status: {status}
-        </Text>
-        <Text dimColor>
-          Slash: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin
-        </Text>
-        <Text dimColor>
-          Enter to send, Shift+Enter for newline, Ctrl+P/Ctrl+N for history, Ctrl+K for palette, type / to browse commands, Ctrl+C to exit
-        </Text>
+      <Box marginBottom={1} borderStyle="round" borderColor="cyan">
+        <Box flexDirection="column" paddingX={1} paddingY={0}>
+          <Text color="cyanBright" bold>
+            Status: {status}
+          </Text>
+          <Text color="white">
+            Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | Session: {sessionTitle} ({activeSession.id.slice(0, 8)})
+          </Text>
+          <Text color="white">
+            Policy: {workspacePolicy.sourcePath ? pathBasename(workspacePolicy.sourcePath) : "MINIMAX.md missing"} | Hooks: {workspacePolicy.hookFiles.length === 0 ? "none" : `${workspacePolicy.hookFiles.length} file(s)`}
+          </Text>
+        </Box>
       </Box>
 
       <Box marginBottom={1} borderStyle="double" borderColor="cyan">
         <Box width={20} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
-            ▐▛███▜▌
+            ░█▀█░█▄█░█▀█░█▀▄░█▀█░█░█░█▀▀░▀█▀░█░█
           </Text>
           <Text color="cyanBright" bold>
-            ▝▜█████▛▘
-          </Text>
-          <Text color="cyanBright" bold>
-            ▐▛███▜▌
+            ░█▀▀░█░█░█▀█░█▀▄░█▀█░█░█░▀▀█░░█░░█▀█
           </Text>
           <Text color="magentaBright" bold>
-            MINI MAX
+            ░▀░░░▀░▀░▀░▀░▀▀░░▀░▀░▀░▀░▀▀▀░░▀░░▀░▀
           </Text>
-          <Text color="magentaBright" bold>
-            T U I
+          <Text color="yellowBright" bold>
+            M I N I M A X - T U I
           </Text>
         </Box>
         <Box flexGrow={1} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
-            Welcome back!
-          </Text>
-          <Text color="cyanBright">
-            ╭────────────────────────────────────────────────────╮
+            ╭────────────── Workspace Snapshot ──────────────╮
           </Text>
           <Text color="white">
             Started: {launchTime}
@@ -1503,16 +1487,34 @@ function pathBasename(value: string): string {
             Active plugins: {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
           </Text>
           <Text color="cyanBright">
-            ╰────────────────────────────────────────────────────╯
+            ╰──────────────────────────────────────────────────╯
           </Text>
         </Box>
         <Box width={40} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="yellowBright" bold>
             Tips
           </Text>
-          <Text color="yellow">/status, /resume, /skill list, /plugin list, /init</Text>
-          <Text color="yellow">/skill install {"<path-or-github-url>"}</Text>
-          <Text color="yellow">/plugin install {"<path-or-github-url>"}</Text>
+          <Text>
+            <Text color="cyanBright">/status</Text>
+            <Text color="yellow">, </Text>
+            <Text color="cyanBright">/resume</Text>
+            <Text color="yellow">, </Text>
+            <Text color="cyanBright">/skill</Text>
+            <Text color="yellow"> list, </Text>
+            <Text color="magentaBright">/plugin</Text>
+            <Text color="yellow"> list, </Text>
+            <Text color="greenBright">/init</Text>
+          </Text>
+          <Text>
+            <Text color="cyanBright">/skill</Text>
+            <Text color="yellow"> install </Text>
+            <Text color="white">{"<path-or-github-url>"}</Text>
+          </Text>
+          <Text>
+            <Text color="magentaBright">/plugin</Text>
+            <Text color="yellow"> install </Text>
+            <Text color="white">{"<path-or-github-url>"}</Text>
+          </Text>
           <Text color="magentaBright" bold>
             Policy
           </Text>
