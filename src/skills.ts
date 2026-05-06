@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { loadWorkspacePolicyContext } from "./workspace-policy.js";
 import type { SkillManifest, SkillSummary } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -38,6 +39,7 @@ export async function listInstalledSkills(): Promise<SkillSummary[]> {
 }
 
 export async function installSkillFromPath(sourcePath: string): Promise<SkillManifest> {
+  await loadWorkspacePolicyContext();
   const resolved = await resolveSkillSource(sourcePath);
   const skillFile = await findSkillFile(resolved.skillRoot);
   if (!skillFile) {
@@ -61,6 +63,7 @@ export async function installSkillFromPath(sourcePath: string): Promise<SkillMan
 }
 
 export async function removeSkill(name: string): Promise<void> {
+  await loadWorkspacePolicyContext();
   const normalized = sanitizeSkillName(name);
   await fs.rm(path.join(getSkillsDir(), normalized), { recursive: true, force: true });
 }

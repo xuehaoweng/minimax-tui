@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { loadWorkspacePolicyContext } from "./workspace-policy.js";
 import type {
   ConversationSession,
   ConversationSessionSummary,
@@ -33,6 +34,7 @@ export async function loadStoredConfig(): Promise<StoredConfig> {
 }
 
 export async function saveStoredConfig(config: StoredConfig): Promise<void> {
+  await loadWorkspacePolicyContext();
   await writeJson(getSettingPath(), config);
 }
 
@@ -58,6 +60,7 @@ export async function loadConversationStore(): Promise<ConversationStore> {
 }
 
 export async function createConversationSession(): Promise<ConversationSession> {
+  await loadWorkspacePolicyContext();
   const store = await loadConversationStore();
   const session = makeConversationSession([]);
   const nextStore: ConversationStore = {
@@ -83,6 +86,7 @@ export async function loadConversationSession(sessionId?: string): Promise<Conve
 }
 
 export async function saveConversationSession(session: ConversationSession, makeCurrent = true): Promise<void> {
+  await loadWorkspacePolicyContext();
   const store = await loadConversationStore();
   const nextSession = normalizeSession(session);
   const nextSessions = [nextSession, ...store.sessions.filter((existing) => existing.id !== nextSession.id)];
@@ -105,15 +109,18 @@ export async function listConversationSessions(): Promise<ConversationSessionSum
 }
 
 export async function clearConversationState(): Promise<void> {
+  await loadWorkspacePolicyContext();
   await removeFile(getConversationStorePath());
   await removeFile(getLegacySessionPath());
 }
 
 export async function saveConversationStore(store: ConversationStore): Promise<void> {
+  await loadWorkspacePolicyContext();
   await writeJson(getConversationStorePath(), store);
 }
 
 export async function resetConversationSession(sessionId: string): Promise<ConversationSession | null> {
+  await loadWorkspacePolicyContext();
   const store = await loadConversationStore();
   const target = store.sessions.find((session) => session.id === sessionId);
   if (!target) {

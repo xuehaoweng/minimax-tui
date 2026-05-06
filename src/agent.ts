@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { createChatCompletion } from "./api/minimax.js";
+import { buildWorkspacePolicyPrompt, loadWorkspacePolicyContext } from "./workspace-policy.js";
 import type { AppConfig, ChatMessage, ToolCall } from "./types.js";
 import type { SkillManifest } from "./types.js";
 
@@ -22,6 +23,20 @@ export async function runAgentTurn(
 ): Promise<AgentTurnResult> {
   const toolDefinitions = getToolDefinitions();
   const workingMessages = [...messages];
+  const workspacePolicy = await loadWorkspacePolicyContext();
+  const policyPrompt = buildWorkspacePolicyPrompt(workspacePolicy);
+  if (
+    policyPrompt &&
+    !workingMessages.some(
+      (message) =>
+        message.role === "system" && message.content.includes("Workspace policy from MINIMAX.md:"),
+    )
+  ) {
+    workingMessages.unshift({
+      role: "system",
+      content: policyPrompt,
+    });
+  }
   let finalText = "";
   let toolCount = 0;
 
@@ -185,6 +200,7 @@ async function executeToolCall(
 }
 
 async function listDirectory(relativePath: string): Promise<string> {
+  await loadWorkspacePolicyContext();
   const resolved = resolveWorkspacePath(relativePath);
   const entries = await fs.readdir(resolved, { withFileTypes: true });
   return entries
@@ -193,11 +209,13 @@ async function listDirectory(relativePath: string): Promise<string> {
 }
 
 async function readFileSafe(relativePath: string): Promise<string> {
+  await loadWorkspacePolicyContext();
   const resolved = resolveWorkspacePath(relativePath);
   return fs.readFile(resolved, "utf8");
 }
 
 async function writeWorkspaceFile(relativePath: string, content: string): Promise<string> {
+  await loadWorkspacePolicyContext();
   const resolved = resolveWorkspacePath(relativePath);
   await fs.mkdir(path.dirname(resolved), { recursive: true });
   await fs.writeFile(resolved, content, "utf8");
@@ -205,6 +223,7 @@ async function writeWorkspaceFile(relativePath: string, content: string): Promis
 }
 
 async function searchWorkspace(relativePath: string, query: string): Promise<string> {
+  await loadWorkspacePolicyContext();
   const resolved = resolveWorkspacePath(relativePath);
   const results: string[] = [];
   await walkSearch(resolved, query, results);
@@ -266,6 +285,7 @@ function toStringArg(value: unknown, fallback: string): string {
 }
 
 async function runCommandTool(args: Record<string, unknown>): Promise<string> {
+  await loadWorkspacePolicyContext();
   const command = toStringArg(args.command, "");
   if (!command) {
     throw new Error("Command is required.");

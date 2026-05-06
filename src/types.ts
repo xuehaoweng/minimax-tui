@@ -122,3 +122,10 @@ export interface PluginRuntimeContext {
   mcpSummaries: string[];
   defaultPrompts: string[];
 }
+
+export interface WorkspacePolicyContext {
+  sourcePath: string | null;
+  content: string;
+  hookFiles: string[];
+  hookSummaries: string[];
+}

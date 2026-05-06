@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { loadWorkspacePolicyContext } from "./workspace-policy.js";
 import type { PluginManifest, PluginRuntimeContext, PluginSummary, SkillManifest } from "./types.js";
 import { loadSkillManifestsFromDirectory } from "./skills.js";
 
@@ -47,6 +48,7 @@ export async function listInstalledPlugins(): Promise<PluginSummary[]> {
 }
 
 export async function installPluginFromSource(source: string): Promise<PluginManifest> {
+  await loadWorkspacePolicyContext();
   const resolved = await resolvePluginSource(source);
   const manifestPath = await findPluginManifest(resolved.pluginRoot);
   if (!manifestPath) {
@@ -69,6 +71,7 @@ export async function installPluginFromSource(source: string): Promise<PluginMan
 }
 
 export async function removePlugin(name: string): Promise<void> {
+  await loadWorkspacePolicyContext();
   const normalized = sanitizePluginName(name);
   await fs.rm(path.join(getPluginsDir(), normalized), { recursive: true, force: true });
 }

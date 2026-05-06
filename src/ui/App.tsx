@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { streamChatCompletion } from "../api/minimax.js";
@@ -17,6 +18,10 @@ import {
   loadPluginRuntimeContext,
   removePlugin,
 } from "../plugins.js";
+import {
+  buildWorkspacePolicyPrompt,
+  loadWorkspacePolicyContext,
+} from "../workspace-policy.js";
 import type {
   AppConfig,
   ChatMessage,
@@ -27,6 +32,7 @@ import type {
   SkillManifest,
   SkillSummary,
   StoredConfig,
+  WorkspacePolicyContext,
 } from "../types.js";
 
 interface AppProps {
@@ -80,6 +86,12 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const [activeSkillManifests, setActiveSkillManifests] = useState<SkillManifest[]>([]);
   const [installedPlugins, setInstalledPlugins] = useState<PluginSummary[]>([]);
   const [activePluginContexts, setActivePluginContexts] = useState<PluginRuntimeContext[]>([]);
+  const [workspacePolicy, setWorkspacePolicy] = useState<WorkspacePolicyContext>({
+    sourcePath: null,
+    content: "",
+    hookFiles: [],
+    hookSummaries: [],
+  });
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sanitizedMessages = useMemo(() => sanitizeMessages(messages), [messages]);
@@ -499,16 +511,6 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     ]);
   }, [activePluginContexts, activeSkillManifests]);
 
-  const conversation = useMemo(() => {
-    return [
-      {
-        role: "system" as const,
-        content: composeSystemPrompt(runtimeConfig, activeAssistantManifests, activePluginContexts),
-      },
-      ...sanitizedMessages,
-    ];
-  }, [activeAssistantManifests, activePluginContexts, runtimeConfig, sanitizedMessages]);
-
   const viewport = useMemo(() => {
     return calculateViewport({
       rows: stdout.rows ?? 24,
@@ -554,6 +556,25 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   useEffect(() => {
     void refreshActivePluginManifests();
   }, [activePluginNames, installedPlugins]);
+
+  useEffect(() => {
+    let alive = true;
+    void loadWorkspacePolicyContext()
+      .then((policy) => {
+        if (alive) {
+          setWorkspacePolicy(policy);
+        }
+      })
+      .catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(`Failed to load workspace policy: ${message}`);
+        setStatus("Policy load error");
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     const draftIsSlashCommand = draft.startsWith("/");
@@ -650,10 +671,26 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     abortRef.current = controller;
 
     try {
+      const freshPolicy = await loadWorkspacePolicyContext();
+      setWorkspacePolicy(freshPolicy);
+      const requestConversation = [
+        {
+          role: "system" as const,
+          content: composeSystemPrompt(
+            runtimeConfig,
+            activeAssistantManifests,
+            activePluginContexts,
+            buildWorkspacePolicyPrompt(freshPolicy),
+          ),
+        },
+        ...sanitizedMessages,
+        { role: "user" as const, content },
+      ];
+
       if (runtimeConfig.mode === "agent") {
         const result = await runAgentTurn(
           runtimeConfig,
-          [...conversation, { role: "user", content }],
+          requestConversation,
           activeSkillManifests,
           controller.signal,
         );
@@ -661,7 +698,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       } else {
         await streamChatCompletion(
           runtimeConfig,
-          [...conversation, { role: "user", content }],
+          requestConversation,
           (token) => {
             setMessages((current) => {
               const index = assistantIndex.current;
@@ -1313,6 +1350,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       `Model: ${runtimeConfig.model}`,
       `Base URL: ${runtimeConfig.baseUrl}`,
       `Session: ${sessionTitle} (${activeSession.id})`,
+      `Policy: ${workspacePolicy.sourcePath ?? "MINIMAX.md missing"}`,
       `Status: ${status}`,
       `Active skills: ${activeSkills}`,
       `Active plugins: ${activePlugins}`,
@@ -1348,7 +1386,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetMins}`;
   }
 
-  function dedupeSkillManifests(manifests: SkillManifest[]): SkillManifest[] {
+function dedupeSkillManifests(manifests: SkillManifest[]): SkillManifest[] {
     const seen = new Set<string>();
     const deduped: SkillManifest[] = [];
     for (const manifest of manifests) {
@@ -1358,9 +1396,13 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       }
       seen.add(key);
       deduped.push(manifest);
-    }
-    return deduped;
   }
+  return deduped;
+}
+
+function pathBasename(value: string): string {
+  return path.basename(value);
+}
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
@@ -1373,6 +1415,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         </Text>
         <Text dimColor>
           Plugins: {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
+        </Text>
+        <Text dimColor>
+          Policy: {workspacePolicy.sourcePath ?? "MINIMAX.md not found"}
         </Text>
         <Text dimColor>
           Status: {status}
@@ -1407,6 +1452,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           <Text color="cyanBright" bold>
             Welcome back!
           </Text>
+          <Text color="cyanBright">
+            ╭────────────────────────────────────────────────────╮
+          </Text>
           <Text color="white">
             Started: {launchTime}
           </Text>
@@ -1428,6 +1476,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           <Text color="white">
             Active plugins: {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
           </Text>
+          <Text color="cyanBright">
+            ╰────────────────────────────────────────────────────╯
+          </Text>
         </Box>
         <Box width={40} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="yellowBright" bold>
@@ -1436,6 +1487,15 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           <Text color="yellow">/status, /resume, /skill list, /plugin list</Text>
           <Text color="yellow">/skill install {"<path-or-github-url>"}</Text>
           <Text color="yellow">/plugin install {"<path-or-github-url>"}</Text>
+          <Text color="magentaBright" bold>
+            Policy
+          </Text>
+          <Text color="magentaBright">
+            {workspacePolicy.sourcePath ? pathBasename(workspacePolicy.sourcePath) : "MINIMAX.md missing"}
+          </Text>
+          <Text color="magentaBright">
+            Hooks: {workspacePolicy.hookFiles.length === 0 ? "none" : `${workspacePolicy.hookFiles.length} file(s)`}
+          </Text>
           <Text color="greenBright" bold>
             Recent activity
           </Text>
@@ -1741,7 +1801,9 @@ function composeSystemPrompt(
   config: AppConfig,
   skills: SkillManifest[],
   plugins: PluginRuntimeContext[],
+  workspacePolicyPrompt = "",
 ): string {
+  const policyPrompt = workspacePolicyPrompt.trim();
   const modePrompt = getModePrompt(config.mode);
   const pluginPrompt =
     plugins.length > 0
@@ -1764,7 +1826,9 @@ function composeSystemPrompt(
           ...skills.map((skill) => `- ${skill.name}: ${skill.description}\n${skill.instructions}`),
         ].join("\n")
       : "";
-  return [config.systemPrompt.trim(), modePrompt, pluginPrompt, skillPrompt].filter(Boolean).join("\n\n");
+  return [config.systemPrompt.trim(), policyPrompt, modePrompt, pluginPrompt, skillPrompt]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function getModePrompt(mode: AppConfig["mode"]): string {
