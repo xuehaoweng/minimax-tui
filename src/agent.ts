@@ -5,6 +5,8 @@ import { promisify } from "node:util";
 import { createChatCompletion } from "./api/minimax.js";
 import { buildWorkspacePolicyPrompt, loadWorkspacePolicyContext } from "./workspace-policy.js";
 import { buildWorkspaceIndexPrompt, loadWorkspaceIndexContext } from "./workspace-index.js";
+import { gitAdd, gitBranch, gitCommit, gitDiff, gitLog, gitStatus } from "./workspace-git.js";
+import { webFetch, webSearch } from "./workspace-web.js";
 import type { AppConfig, ChatMessage, ToolCall } from "./types.js";
 import type { SkillManifest } from "./types.js";
 
@@ -16,13 +18,18 @@ export interface AgentTurnResult {
   toolCount: number;
 }
 
+export interface AgentTurnOptions {
+  allowSubagents?: boolean;
+}
+
 export async function runAgentTurn(
   config: AppConfig,
   messages: ChatMessage[],
   skillManifests: SkillManifest[],
   signal?: AbortSignal,
+  options: AgentTurnOptions = {},
 ): Promise<AgentTurnResult> {
-  const toolDefinitions = getToolDefinitions();
+  const toolDefinitions = getToolDefinitions(options);
   const workingMessages = [...messages];
   const workspacePolicy = await loadWorkspacePolicyContext();
   const workspaceIndex = await loadWorkspaceIndexContext();
@@ -85,7 +92,7 @@ export async function runAgentTurn(
     }
 
     for (const call of calls) {
-      const toolResult = await executeToolCall(call, skillManifests);
+      const toolResult = await executeToolCall(call, config, skillManifests, signal, options);
       workingMessages.push(toolResult.message);
       toolCount += 1;
     }
@@ -94,8 +101,8 @@ export async function runAgentTurn(
   return { messages: workingMessages, finalText, toolCount };
 }
 
-function getToolDefinitions(): Array<Record<string, unknown>> {
-  return [
+function getToolDefinitions(options: AgentTurnOptions): Array<Record<string, unknown>> {
+  const tools: Array<Record<string, unknown>> = [
     {
       type: "function",
       function: {
@@ -178,12 +185,149 @@ function getToolDefinitions(): Array<Record<string, unknown>> {
         },
       },
     },
+    {
+      type: "function",
+      function: {
+        name: "git_status",
+        description: "Show git status for the current workspace.",
+        parameters: {
+          type: "object",
+          properties: {},
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "git_diff",
+        description: "Show git diff for the current workspace.",
+        parameters: {
+          type: "object",
+          properties: {
+            staged: { type: "boolean", description: "Show staged diff instead of working tree diff." },
+            paths: {
+              type: "array",
+              items: { type: "string" },
+              description: "Optional paths to limit the diff.",
+            },
+          },
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "git_log",
+        description: "Show recent git history.",
+        parameters: {
+          type: "object",
+          properties: {
+            count: { type: "number", description: "Maximum number of commits to show." },
+          },
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "git_branch",
+        description: "List git branches.",
+        parameters: {
+          type: "object",
+          properties: {},
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "git_add",
+        description: "Stage git paths.",
+        parameters: {
+          type: "object",
+          properties: {
+            paths: {
+              type: "array",
+              items: { type: "string" },
+              description: "Paths to stage.",
+            },
+          },
+          required: ["paths"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "git_commit",
+        description: "Create a git commit.",
+        parameters: {
+          type: "object",
+          properties: {
+            message: { type: "string", description: "Commit message." },
+            all: { type: "boolean", description: "Stage tracked changes before committing." },
+          },
+          required: ["message"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "web_search",
+        description: "Search the web and return top results.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Search query." },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "web_fetch",
+        description: "Fetch a web page and extract readable content.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "URL to fetch." },
+          },
+          required: ["url"],
+        },
+      },
+    },
   ];
+
+  if (options.allowSubagents !== false) {
+    tools.push({
+      type: "function",
+      function: {
+        name: "spawn_subagent",
+        description: "Delegate a focused task to a subagent.",
+        parameters: {
+          type: "object",
+          properties: {
+            goal: { type: "string", description: "Task goal for the subagent." },
+            context: { type: "string", description: "Optional extra context for the subagent." },
+          },
+          required: ["goal"],
+        },
+      },
+    });
+  }
+
+  return tools;
 }
 
 async function executeToolCall(
   call: ToolCall,
+  config: AppConfig,
   skillManifests: SkillManifest[],
+  signal?: AbortSignal,
+  options: AgentTurnOptions = {},
 ): Promise<{ message: ChatMessage }> {
   const name = call.function.name;
   const args = parseToolArguments(call.function.arguments);
@@ -207,6 +351,52 @@ async function executeToolCall(
     }
     case "run_command": {
       const result = await runCommandTool(args);
+      return makeToolMessage(call, result);
+    }
+    case "git_status": {
+      const result = await gitStatus();
+      return makeToolMessage(call, result);
+    }
+    case "git_diff": {
+      const staged = Boolean(args.staged);
+      const paths = Array.isArray(args.paths) ? args.paths.map((value) => toStringArg(value, "")).filter(Boolean) : [];
+      const result = await gitDiff(process.cwd(), staged, paths);
+      return makeToolMessage(call, result);
+    }
+    case "git_log": {
+      const count = typeof args.count === "number" && Number.isFinite(args.count) ? args.count : 10;
+      const result = await gitLog(process.cwd(), count);
+      return makeToolMessage(call, result);
+    }
+    case "git_branch": {
+      const result = await gitBranch(process.cwd());
+      return makeToolMessage(call, result);
+    }
+    case "git_add": {
+      const paths = Array.isArray(args.paths) ? args.paths.map((value) => toStringArg(value, "")).filter(Boolean) : [];
+      const result = await gitAdd(process.cwd(), paths);
+      return makeToolMessage(call, result);
+    }
+    case "git_commit": {
+      const message = toStringArg(args.message, "");
+      const all = Boolean(args.all);
+      const result = await gitCommit(process.cwd(), message, all);
+      return makeToolMessage(call, result);
+    }
+    case "web_search": {
+      const result = await webSearch(toStringArg(args.query, ""));
+      return makeToolMessage(call, result);
+    }
+    case "web_fetch": {
+      const result = await webFetch(toStringArg(args.url, ""));
+      return makeToolMessage(call, result);
+    }
+    case "spawn_subagent": {
+      if (options.allowSubagents === false) {
+        return makeToolMessage(call, "Subagents are disabled in this context.");
+      }
+
+      const result = await runSubagentTask(config, args, skillManifests, signal);
       return makeToolMessage(call, result);
     }
     default:
@@ -339,6 +529,46 @@ async function runCommandTool(args: Record<string, unknown>): Promise<string> {
       error.killed ? "Command timed out or was killed." : undefined,
     );
   }
+}
+
+async function runSubagentTask(
+  config: AppConfig,
+  args: Record<string, unknown>,
+  skillManifests: SkillManifest[],
+  signal?: AbortSignal,
+): Promise<string> {
+  const goal = toStringArg(args.goal, "");
+  if (!goal) {
+    throw new Error("Goal is required.");
+  }
+
+  const context = toStringArg(args.context, "");
+  const messages: ChatMessage[] = [
+    {
+      role: "system",
+      content: [
+        "You are a delegated subagent inside minimax-tui.",
+        "Solve the task with the available tools and return a concise report.",
+        "Do not spawn further subagents.",
+      ].join(" "),
+    },
+    {
+      role: "user",
+      content: [
+        `Goal: ${goal}`,
+        context ? `Context: ${context}` : "",
+      ].filter(Boolean).join("\n"),
+    },
+  ];
+
+  const result = await runAgentTurn(config, messages, skillManifests, signal, {
+    allowSubagents: false,
+  });
+
+  return [
+    `Subagent tools used: ${result.toolCount}`,
+    `Subagent final: ${result.finalText || "(no final text)"}`,
+  ].join("\n");
 }
 
 function formatCommandResult(

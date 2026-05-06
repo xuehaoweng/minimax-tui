@@ -2002,7 +2002,7 @@ function getModePrompt(mode: AppConfig["mode"]): string {
     case "agent":
       return [
         "Mode: agent. Be concise, action-oriented, and treat the conversation like an execution workspace.",
-        "You can inspect files, edit files, and run non-interactive workspace commands with tools.",
+        "You can inspect files, edit files, run non-interactive workspace commands, inspect git, search the web, and delegate subagents with tools.",
         "Prefer the smallest useful command, avoid destructive actions unless clearly requested, and report what changed.",
       ].join(" ");
     case "chat":
