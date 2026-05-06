@@ -543,14 +543,46 @@ async function runSubagentTask(
   }
 
   const context = toStringArg(args.context, "");
-  const messages: ChatMessage[] = [
+  const planResponse = await createChatCompletion(
+    config,
+    [
+      {
+        role: "system",
+        content: [
+          "You are the planning stage of a delegated subagent inside minimax-tui.",
+          "Return a concise implementation plan only.",
+          "Use 3 to 5 bullet points.",
+          "Do not use tools.",
+          "Do not mention hidden reasoning.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: [
+          `Goal: ${goal}`,
+          context ? `Context: ${context}` : "",
+        ].filter(Boolean).join("\n"),
+      },
+    ],
+    {},
+    signal,
+  );
+
+  const planText = sanitizeSubagentSection(planResponse.choices?.[0]?.message?.content ?? "");
+  const executionMessages: ChatMessage[] = [
     {
       role: "system",
       content: [
-        "You are a delegated subagent inside minimax-tui.",
-        "Solve the task with the available tools and return a concise report.",
+        "You are the execution stage of a delegated subagent inside minimax-tui.",
+        "Follow the plan and use the available tools to complete the task.",
+        "Do not spawn further subagents.",
+        "Return concise updates and a compact final answer.",
         "Do not spawn further subagents.",
       ].join(" "),
+    },
+    {
+      role: "system",
+      content: `Plan:\n${planText || "(no plan provided)"}`,
     },
     {
       role: "user",
@@ -561,14 +593,51 @@ async function runSubagentTask(
     },
   ];
 
-  const result = await runAgentTurn(config, messages, skillManifests, signal, {
+  const result = await runAgentTurn(config, executionMessages, skillManifests, signal, {
     allowSubagents: false,
   });
 
+  const reportResponse = await createChatCompletion(
+    config,
+    [
+      {
+        role: "system",
+        content: [
+          "You are the reporting stage of a delegated subagent inside minimax-tui.",
+          "Summarize the outcome in 3 concise bullets.",
+          "Do not mention hidden reasoning.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: [
+          `Goal: ${goal}`,
+          `Plan:\n${planText || "(no plan provided)"}`,
+          `Execution final:\n${result.finalText || "(no final text)"}`,
+          `Tools used: ${result.toolCount}`,
+        ].join("\n\n"),
+      },
+    ],
+    {},
+    signal,
+  );
+
+  const reportText = sanitizeSubagentSection(reportResponse.choices?.[0]?.message?.content ?? "");
   return [
-    `Subagent tools used: ${result.toolCount}`,
-    `Subagent final: ${result.finalText || "(no final text)"}`,
+    "TASK STATUS: done",
+    `GOAL: ${goal}`,
+    "PLAN:",
+    planText || "(no plan provided)",
+    "EXECUTION:",
+    `Tools used: ${result.toolCount}`,
+    result.finalText ? `Final: ${result.finalText}` : "Final: (no final text)",
+    "REPORT:",
+    reportText || "(no report provided)",
   ].join("\n");
+}
+
+function sanitizeSubagentSection(text: string): string {
+  return text.replace(/\r/g, "").trim();
 }
 
 function formatCommandResult(

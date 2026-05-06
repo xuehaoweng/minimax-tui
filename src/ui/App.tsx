@@ -61,6 +61,17 @@ interface SlashCommand {
   kind: "insert" | "picker" | "action";
 }
 
+interface SubagentTaskRecord {
+  id: string;
+  goal: string;
+  plan: string;
+  execution: string;
+  report: string;
+  toolsUsed: number;
+  finalText: string;
+  status: string;
+}
+
 export function App({ config, initialSession, onConfigChange }: AppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -84,6 +95,8 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const [sessionPickerIndex, setSessionPickerIndex] = useState(0);
   const [sessionSummaries, setSessionSummaries] = useState<ConversationSessionSummary[]>([]);
   const [sessionPickerLoading, setSessionPickerLoading] = useState(false);
+  const [isTaskPanelOpen, setIsTaskPanelOpen] = useState(false);
+  const [taskPanelIndex, setTaskPanelIndex] = useState(0);
   const [promptHistory, setPromptHistory] = useState<string[]>([]);
   const [historyCursor, setHistoryCursor] = useState<number | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -117,6 +130,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const activePluginNames = useMemo(() => activeSession.activePlugins ?? [], [activeSession.activePlugins]);
   const recentActivity = useMemo(() => buildRecentActivitySummary(sanitizedMessages), [sanitizedMessages]);
   const subagentTasks = useMemo(() => extractSubagentTasks(sanitizedMessages), [sanitizedMessages]);
+  const selectedSubagentTask = useMemo(() => subagentTasks[taskPanelIndex] ?? null, [subagentTasks, taskPanelIndex]);
   const workspaceIndexSummary = useMemo(() => {
     return [
       `Root: ${workspaceIndex.rootDir}`,
@@ -332,6 +346,19 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       return;
     }
 
+    if (key.ctrl && input === "t") {
+      if (isTaskPanelOpen) {
+        setIsTaskPanelOpen(false);
+      } else {
+        setIsPaletteOpen(false);
+        setIsSlashPickerOpen(false);
+        setIsSessionPickerOpen(false);
+        setIsTaskPanelOpen(true);
+        setTaskPanelIndex(0);
+      }
+      return;
+    }
+
     if (key.ctrl && input === "p") {
       recallPrompt(-1);
       return;
@@ -339,6 +366,46 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
     if (key.ctrl && input === "n") {
       recallPrompt(1);
+      return;
+    }
+
+    if (isTaskPanelOpen) {
+      if (key.escape) {
+        setIsTaskPanelOpen(false);
+        setStatus("Task panel closed");
+        return;
+      }
+
+      if (key.pageUp) {
+        setTaskPanelIndex((current) => Math.max(0, current - 5));
+        return;
+      }
+
+      if (key.pageDown) {
+        setTaskPanelIndex((current) => Math.min(subagentTasks.length - 1, current + 5));
+        return;
+      }
+
+      if (key.upArrow) {
+        setTaskPanelIndex((current) => Math.max(0, current - 1));
+        return;
+      }
+
+      if (key.downArrow) {
+        setTaskPanelIndex((current) => Math.min(subagentTasks.length - 1, current + 1));
+        return;
+      }
+
+      if (key.return) {
+        const selected = subagentTasks[taskPanelIndex];
+        if (selected) {
+          setNotice(formatSubagentTaskDetail(selected));
+          setStatus("Task details");
+          setIsTaskPanelOpen(false);
+        }
+        return;
+      }
+
       return;
     }
 
@@ -575,8 +642,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       paletteOpen: isPaletteOpen,
       slashPickerOpen: isSlashPickerOpen,
       sessionPickerOpen: isSessionPickerOpen,
+      taskPanelOpen: isTaskPanelOpen,
     });
-  }, [draft, isPaletteOpen, isSessionPickerOpen, isSlashPickerOpen, stdout.rows]);
+  }, [draft, isPaletteOpen, isSessionPickerOpen, isSlashPickerOpen, isTaskPanelOpen, stdout.rows]);
 
   const visibleMessages = useMemo(() => {
     const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
@@ -597,6 +665,21 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
     void refreshSessionPicker();
   }, [isSessionPickerOpen]);
+
+  useEffect(() => {
+    if (!isTaskPanelOpen) {
+      return;
+    }
+
+    if (subagentTasks.length === 0) {
+      setTaskPanelIndex(0);
+      return;
+    }
+
+    if (taskPanelIndex >= subagentTasks.length) {
+      setTaskPanelIndex(subagentTasks.length - 1);
+    }
+  }, [isTaskPanelOpen, subagentTasks.length, taskPanelIndex]);
 
   useEffect(() => {
     void refreshInstalledSkills();
@@ -842,8 +925,13 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         return;
       }
       case "tasks": {
-        setStatus("Subagent tasks");
-        setNotice(formatSubagentTasks(subagentTasks));
+        setIsPaletteOpen(false);
+        setIsSlashPickerOpen(false);
+        setIsSessionPickerOpen(false);
+        setIsTaskPanelOpen(true);
+        setTaskPanelIndex(0);
+        setStatus("Task queue");
+        setNotice("Use Up/Down to inspect subagent runs, Enter for full details, Esc to close.");
         return;
       }
       case "index": {
@@ -1506,7 +1594,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     return `${role}: ${snippet}${content.length > 72 ? "..." : ""}`;
   }
 
-  function formatSubagentTasks(tasks: Array<{ goal: string; result: string; status: string }>): string {
+  function formatSubagentTasks(tasks: SubagentTaskRecord[]): string {
     if (tasks.length === 0) {
       return "No subagent runs yet.";
     }
@@ -1514,33 +1602,96 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     return tasks
       .slice(0, 4)
       .map((task, index) => {
-        const goal = Array.from(task.goal).slice(0, 42).join("");
-        const result = Array.from(task.result).slice(0, 42).join("");
-        return `${index + 1}. ${task.status}: ${goal}${task.goal.length > 42 ? "..." : ""} -> ${result}${task.result.length > 42 ? "..." : ""}`;
+        const goal = summarizeLine(task.goal, 42);
+        const report = summarizeLine(task.report, 42);
+        return `${index + 1}. ${task.status}: ${goal} -> ${report}`;
       })
       .join("\n");
   }
 
-  function extractSubagentTasks(sessionMessages: ChatMessage[]): Array<{ goal: string; result: string; status: string }> {
-    const tasks: Array<{ goal: string; result: string; status: string }> = [];
+  function formatSubagentTaskDetail(task: SubagentTaskRecord): string {
+    return [
+      `Goal: ${task.goal}`,
+      `Status: ${task.status}`,
+      `Tools used: ${task.toolsUsed}`,
+      "Plan:",
+      task.plan || "(no plan)",
+      "Execution:",
+      task.execution || "(no execution)",
+      "Report:",
+      task.report || "(no report)",
+    ].join("\n");
+  }
+
+  function extractSubagentTasks(sessionMessages: ChatMessage[]): SubagentTaskRecord[] {
+    const tasks: SubagentTaskRecord[] = [];
     for (let index = 0; index < sessionMessages.length; index += 1) {
       const message = sessionMessages[index];
       if (message.role !== "tool" || message.name !== "spawn_subagent") {
         continue;
       }
 
-      const nextAssistant = sessionMessages.slice(index + 1).find((item) => item.role === "assistant");
-      const goalLine = message.content.split("\n").find((line) => line.startsWith("Subagent final:")) ?? "";
-      const result = goalLine.replace(/^Subagent final:\s*/i, "").trim() || message.content.trim();
-      const status = message.content.includes("Subagent tools used:") ? "done" : "queued";
-      tasks.push({
-        goal: nextAssistant?.content.trim() || "Delegated task",
-        result: result || "No result",
-        status,
-      });
+      tasks.push(parseSubagentTaskRecord(message.content, index));
     }
 
     return tasks;
+  }
+
+  function parseSubagentTaskRecord(content: string, index: number): SubagentTaskRecord {
+    const sections = splitTaskSections(content);
+    const goal = sections.goal || `Delegated task ${index + 1}`;
+    const plan = sections.plan;
+    const execution = sections.execution;
+    const report = sections.report;
+    const toolsUsedMatch = content.match(/Tools used:\s*(\d+)/i);
+    const toolsUsed = toolsUsedMatch ? Number.parseInt(toolsUsedMatch[1] ?? "0", 10) : 0;
+    const finalTextMatch = execution.match(/Final:\s*([^\n]+)/i);
+    const finalText = finalTextMatch ? finalTextMatch[1].trim() : "";
+    const status = content.includes("TASK STATUS: done") ? "done" : "queued";
+
+    return {
+      id: `task-${index}`,
+      goal,
+      plan,
+      execution,
+      report,
+      toolsUsed,
+      finalText,
+      status,
+    };
+  }
+
+  function splitTaskSections(content: string): {
+    goal: string;
+    plan: string;
+    execution: string;
+    report: string;
+  } {
+    const sections = {
+      goal: "",
+      plan: "",
+      execution: "",
+      report: "",
+    };
+
+    const goalMatch = content.match(/GOAL:\s*([\s\S]*?)(?:\nPLAN:|\nEXECUTION:|\nREPORT:|$)/i);
+    const planMatch = content.match(/PLAN:\s*([\s\S]*?)(?:\nEXECUTION:|\nREPORT:|$)/i);
+    const executionMatch = content.match(/EXECUTION:\s*([\s\S]*?)(?:\nREPORT:|$)/i);
+    const reportMatch = content.match(/REPORT:\s*([\s\S]*)/i);
+
+    sections.goal = goalMatch ? goalMatch[1]?.trim() ?? "" : "";
+    sections.plan = planMatch ? planMatch[1]?.trim() ?? "" : "";
+    sections.execution = executionMatch ? executionMatch[1]?.trim() ?? "" : "";
+    sections.report = reportMatch ? reportMatch[1]?.trim() ?? "" : "";
+    return sections;
+  }
+
+  function summarizeLine(value: string, maxLength: number): string {
+    const clean = value.replace(/\s+/g, " ").trim();
+    if (clean.length <= maxLength) {
+      return clean;
+    }
+    return `${clean.slice(0, maxLength)}...`;
   }
 
   function formatTimestampWithOffset(date: Date): string {
@@ -1707,6 +1858,9 @@ function pathBasename(value: string): string {
             <Text color="cyanBright">subagent</Text>
             <Text color="yellow"> spawn_subagent</Text>
           </Text>
+          <Text color="greenBright">
+            Ctrl+T opens the task queue
+          </Text>
           <Text color="magentaBright" bold>
             Policy
           </Text>
@@ -1780,9 +1934,79 @@ function pathBasename(value: string): string {
           {renderDraft(draft, stdout.columns ?? 80)}
         </Box>
         <Text dimColor>
-          PgUp/PgDn or Up/Down to scroll message history. Type /resume to pick a saved session.
+          PgUp/PgDn or Up/Down to scroll message history. Type /resume to pick a saved session. Ctrl+T opens task queue.
         </Text>
       </Box>
+
+      {isTaskPanelOpen ? (
+        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="green">
+          <Box paddingX={1}>
+            <Text color="greenBright" bold>
+              Task Queue
+            </Text>
+          </Box>
+          <Box paddingX={1}>
+            <Text dimColor>
+              {subagentTasks.length === 0
+                ? "No subagent tasks yet."
+                : `${subagentTasks.length} task(s) | Up/Down to browse | Enter for detail | Esc to close`}
+            </Text>
+          </Box>
+          <Box paddingX={1} paddingBottom={1}>
+            <Box width={32} flexDirection="column" marginRight={1}>
+              {subagentTasks.length === 0 ? (
+                <Text dimColor>No tasks to show.</Text>
+              ) : (
+                subagentTasks.slice(0, 8).map((task, index) => {
+                  const selected = index === taskPanelIndex;
+                  return (
+                    <Text
+                      key={task.id}
+                      color={selected ? "black" : task.status === "done" ? "greenBright" : "yellowBright"}
+                      backgroundColor={selected ? "green" : undefined}
+                      bold={selected}
+                    >
+                      {selected ? ">" : " "} {index + 1}. {summarizeLine(task.goal, 24)}
+                    </Text>
+                  );
+                })
+              )}
+            </Box>
+            <Box flexGrow={1} flexDirection="column">
+              {selectedSubagentTask ? (
+                <>
+                  <Text color="white" bold>
+                    Goal
+                  </Text>
+                  <Text color="white" wrap="wrap">
+                    {selectedSubagentTask.goal}
+                  </Text>
+                  <Text color="white" bold>
+                    Plan
+                  </Text>
+                  <Text color="white" wrap="wrap">
+                    {selectedSubagentTask.plan || "(no plan)"}
+                  </Text>
+                  <Text color="white" bold>
+                    Execution
+                  </Text>
+                  <Text color="white" wrap="wrap">
+                    {selectedSubagentTask.execution || "(no execution)"}
+                  </Text>
+                  <Text color="white" bold>
+                    Report
+                  </Text>
+                  <Text color="white" wrap="wrap">
+                    {selectedSubagentTask.report || "(no report)"}
+                  </Text>
+                </>
+              ) : (
+                <Text dimColor>Select a task to inspect.</Text>
+              )}
+            </Box>
+          </Box>
+        </Box>
+      ) : null}
 
       {isSlashPickerOpen ? (
         <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="cyan">
@@ -1917,6 +2141,7 @@ interface ViewportArgs {
   paletteOpen: boolean;
   slashPickerOpen: boolean;
   sessionPickerOpen: boolean;
+  taskPanelOpen: boolean;
 }
 
 function calculateViewport({
@@ -1925,13 +2150,15 @@ function calculateViewport({
   paletteOpen,
   slashPickerOpen,
   sessionPickerOpen,
+  taskPanelOpen,
 }: ViewportArgs): { pageSize: number } {
   const draftLines = Math.max(1, draft.split("\n").length);
   const baseChrome = 20;
   const paletteChrome = paletteOpen ? 9 : 0;
   const slashPickerChrome = slashPickerOpen ? 8 : 0;
   const sessionPickerChrome = sessionPickerOpen ? 8 : 0;
-  const available = rows - baseChrome - paletteChrome - slashPickerChrome - sessionPickerChrome - draftLines;
+  const taskPanelChrome = taskPanelOpen ? 15 : 0;
+  const available = rows - baseChrome - paletteChrome - slashPickerChrome - sessionPickerChrome - taskPanelChrome - draftLines;
   return {
     pageSize: Math.max(3, Math.floor(available / 2)),
   };
