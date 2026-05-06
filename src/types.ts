@@ -129,3 +129,12 @@ export interface WorkspacePolicyContext {
   hookFiles: string[];
   hookSummaries: string[];
 }
+
+export interface WorkspaceIndexContext {
+  rootDir: string;
+  fileCount: number;
+  codeFileCount: number;
+  treeLines: string[];
+  importLines: string[];
+  signatureLines: string[];
+}

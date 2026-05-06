@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { createChatCompletion } from "./api/minimax.js";
 import { buildWorkspacePolicyPrompt, loadWorkspacePolicyContext } from "./workspace-policy.js";
+import { buildWorkspaceIndexPrompt, loadWorkspaceIndexContext } from "./workspace-index.js";
 import type { AppConfig, ChatMessage, ToolCall } from "./types.js";
 import type { SkillManifest } from "./types.js";
 
@@ -24,7 +25,9 @@ export async function runAgentTurn(
   const toolDefinitions = getToolDefinitions();
   const workingMessages = [...messages];
   const workspacePolicy = await loadWorkspacePolicyContext();
+  const workspaceIndex = await loadWorkspaceIndexContext();
   const policyPrompt = buildWorkspacePolicyPrompt(workspacePolicy);
+  const indexPrompt = buildWorkspaceIndexPrompt(workspaceIndex);
   if (
     policyPrompt &&
     !workingMessages.some(
@@ -35,6 +38,18 @@ export async function runAgentTurn(
     workingMessages.unshift({
       role: "system",
       content: policyPrompt,
+    });
+  }
+  if (
+    indexPrompt &&
+    !workingMessages.some(
+      (message) =>
+        message.role === "system" && message.content.includes("Workspace code index:"),
+    )
+  ) {
+    workingMessages.unshift({
+      role: "system",
+      content: indexPrompt,
     });
   }
   let finalText = "";

@@ -23,6 +23,10 @@ import {
   buildWorkspacePolicyPrompt,
   loadWorkspacePolicyContext,
 } from "../workspace-policy.js";
+import {
+  buildWorkspaceIndexPrompt,
+  loadWorkspaceIndexContext,
+} from "../workspace-index.js";
 import type {
   AppConfig,
   ChatMessage,
@@ -33,6 +37,7 @@ import type {
   SkillManifest,
   SkillSummary,
   StoredConfig,
+  WorkspaceIndexContext,
   WorkspacePolicyContext,
 } from "../types.js";
 
@@ -93,12 +98,30 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     hookFiles: [],
     hookSummaries: [],
   });
+  const [workspaceIndex, setWorkspaceIndex] = useState<WorkspaceIndexContext>({
+    rootDir: process.cwd(),
+    fileCount: 0,
+    codeFileCount: 0,
+    treeLines: [],
+    importLines: [],
+    signatureLines: [],
+  });
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const sanitizedMessages = useMemo(() => sanitizeMessages(messages), [messages]);
   const activeSkillNames = useMemo(() => activeSession.activeSkills ?? [], [activeSession.activeSkills]);
   const activePluginNames = useMemo(() => activeSession.activePlugins ?? [], [activeSession.activePlugins]);
   const recentActivity = useMemo(() => buildRecentActivitySummary(sanitizedMessages), [sanitizedMessages]);
+  const workspaceIndexSummary = useMemo(() => {
+    return [
+      `Root: ${workspaceIndex.rootDir}`,
+      `Files: ${workspaceIndex.fileCount}`,
+      `Code files: ${workspaceIndex.codeFileCount}`,
+      `Tree entries: ${workspaceIndex.treeLines.length}`,
+      `Imports: ${workspaceIndex.importLines.length}`,
+      `Signatures: ${workspaceIndex.signatureLines.length}`,
+    ].join("\n");
+  }, [workspaceIndex]);
 
   const paletteActions = useMemo<PaletteAction[]>(() => {
     return [
@@ -172,7 +195,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Slash commands: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
+            "Slash commands: /help /status /index /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
           );
         },
       },
@@ -190,6 +213,11 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         kind: "action",
         name: "status",
         description: "Show the current session status.",
+      },
+      {
+        kind: "action",
+        name: "index",
+        description: "Show the lightweight workspace code index.",
       },
       {
         kind: "insert",
@@ -595,6 +623,25 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   }, []);
 
   useEffect(() => {
+    let alive = true;
+    void loadWorkspaceIndexContext()
+      .then((index) => {
+        if (alive) {
+          setWorkspaceIndex(index);
+        }
+      })
+      .catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(`Failed to load workspace index: ${message}`);
+        setStatus("Index load error");
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
     const draftIsSlashCommand = draft.startsWith("/");
     const draftHasArguments = /^\/\S+\s+/.test(draft);
     const shouldOpen =
@@ -690,7 +737,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
 
     try {
       const freshPolicy = await loadWorkspacePolicyContext();
+      const freshIndex = await loadWorkspaceIndexContext();
       setWorkspacePolicy(freshPolicy);
+      setWorkspaceIndex(freshIndex);
       const requestConversation = [
         {
           role: "system" as const,
@@ -699,6 +748,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
             activeAssistantManifests,
             activePluginContexts,
             buildWorkspacePolicyPrompt(freshPolicy),
+            buildWorkspaceIndexPrompt(freshIndex),
           ),
         },
         ...sanitizedMessages,
@@ -771,13 +821,18 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-            "Slash commands: /help /status /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
+          "Slash commands: /help /status /index /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
         );
         setStatus("Command help");
         return;
       case "status": {
         setStatus("Session status");
         setNotice(formatSessionStatus());
+        return;
+      }
+      case "index": {
+        setStatus("Workspace index");
+        setNotice(formatWorkspaceIndexStatus());
         return;
       }
       case "mode": {
@@ -1377,11 +1432,29 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       `Base URL: ${runtimeConfig.baseUrl}`,
       `Session: ${sessionTitle} (${activeSession.id})`,
       `Policy: ${workspacePolicy.sourcePath ?? "MINIMAX.md missing"}`,
+      `Index: ${workspaceIndex.fileCount} files / ${workspaceIndex.codeFileCount} code files`,
       `Status: ${status}`,
       `Active skills: ${activeSkills}`,
       `Active plugins: ${activePlugins}`,
       `Messages: ${messages.length}`,
       `Pinned: ${isPinnedToBottom ? "bottom" : "free"}`,
+    ].join("\n");
+  }
+
+  function formatWorkspaceIndexStatus(): string {
+    const treePreview = workspaceIndex.treeLines.length > 0 ? workspaceIndex.treeLines.slice(0, 12).join("\n") : "No indexed files.";
+    const importPreview = workspaceIndex.importLines.length > 0 ? workspaceIndex.importLines.slice(0, 10).join("\n") : "No imports found.";
+    const signaturePreview = workspaceIndex.signatureLines.length > 0 ? workspaceIndex.signatureLines.slice(0, 10).join("\n") : "No signatures found.";
+    return [
+      `Root: ${workspaceIndex.rootDir}`,
+      `Files: ${workspaceIndex.fileCount}`,
+      `Code files: ${workspaceIndex.codeFileCount}`,
+      "Tree:",
+      treePreview,
+      "Imports:",
+      importPreview,
+      "Signatures:",
+      signaturePreview,
     ].join("\n");
   }
 
@@ -1442,6 +1515,9 @@ function pathBasename(value: string): string {
           </Text>
           <Text color="white">
             Policy: {workspacePolicy.sourcePath ? pathBasename(workspacePolicy.sourcePath) : "MINIMAX.md missing"} | Hooks: {workspacePolicy.hookFiles.length === 0 ? "none" : `${workspacePolicy.hookFiles.length} file(s)`}
+          </Text>
+          <Text color="white">
+            Index: {workspaceIndex.fileCount} files | {workspaceIndex.codeFileCount} code files
           </Text>
         </Box>
       </Box>
@@ -1524,6 +1600,10 @@ function pathBasename(value: string): string {
           <Text color="magentaBright">
             Hooks: {workspacePolicy.hookFiles.length === 0 ? "none" : `${workspacePolicy.hookFiles.length} file(s)`}
           </Text>
+          <Text color="greenBright" bold>
+            Index
+          </Text>
+          <Text color="greenBright">{workspaceIndexSummary}</Text>
           <Text color="greenBright" bold>
             Recent activity
           </Text>
@@ -1830,8 +1910,10 @@ function composeSystemPrompt(
   skills: SkillManifest[],
   plugins: PluginRuntimeContext[],
   workspacePolicyPrompt = "",
+  workspaceIndexPrompt = "",
 ): string {
   const policyPrompt = workspacePolicyPrompt.trim();
+  const indexPrompt = workspaceIndexPrompt.trim();
   const modePrompt = getModePrompt(config.mode);
   const pluginPrompt =
     plugins.length > 0
@@ -1854,7 +1936,7 @@ function composeSystemPrompt(
           ...skills.map((skill) => `- ${skill.name}: ${skill.description}\n${skill.instructions}`),
         ].join("\n")
       : "";
-  return [config.systemPrompt.trim(), policyPrompt, modePrompt, pluginPrompt, skillPrompt]
+  return [config.systemPrompt.trim(), policyPrompt, indexPrompt, modePrompt, pluginPrompt, skillPrompt]
     .filter(Boolean)
     .join("\n\n");
 }
