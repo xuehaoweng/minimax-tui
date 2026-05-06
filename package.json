@@ -1,0 +1,35 @@
+{
+  "name": "minimax-tui",
+  "version": "0.1.0",
+  "description": "Terminal UI for MiniMax chat",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "minimax-tui": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "start": "tsx src/cli.ts",
+    "clean": "rm -rf dist",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "ink": "^5.2.1",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "@types/react": "^18.3.23",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
