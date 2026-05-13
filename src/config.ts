@@ -18,7 +18,7 @@ export async function readAppConfig(argv: string[]): Promise<AppConfig | null> {
     systemPrompt: flags.system ?? stored.systemPrompt ?? "You are a helpful assistant.",
     temperature: parseNumber(flags.temperature ?? stored.temperature?.toString(), 1),
     maxTokens: parseInteger(flags["max-tokens"] ?? stored.maxTokens?.toString(), 1024),
-    mode: normalizeMode(flags.mode ?? stored.mode ?? "chat") ?? "chat",
+    mode: normalizeMode(flags.mode ?? stored.mode ?? "agent") ?? "agent",
   };
 }
 

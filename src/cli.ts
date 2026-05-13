@@ -99,6 +99,7 @@ async function main(): Promise<void> {
       React.createElement(ConfigWizard, {
         initialConfig: stored,
       }),
+      { exitOnCtrlC: false },
     );
     await wizard.waitUntilExit();
 
@@ -129,6 +130,7 @@ async function startChat(config: AppConfig) {
         await saveStoredConfig({ ...current, ...patch });
       },
     }),
+    { exitOnCtrlC: false },
   );
 }
 
@@ -141,6 +143,7 @@ async function handleConfigCommand(args: string[]): Promise<void> {
       React.createElement(ConfigWizard, {
         initialConfig: stored,
       }),
+      { exitOnCtrlC: false },
     );
     return;
   }

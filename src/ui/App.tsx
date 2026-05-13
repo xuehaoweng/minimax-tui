@@ -1,8 +1,12 @@
 import path from "node:path";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { streamChatCompletion } from "../api/minimax.js";
+import { createChatCompletion, streamChatCompletion } from "../api/minimax.js";
 import { runAgentTurn } from "../agent.js";
+import { appendProjectMemory, getProjectMemoryPath, loadProjectMemory } from "../project-memory.js";
+import { compactToolMessages } from "../tool-memory.js";
+import { prepareContextForRequest } from "../context-manager.js";
+import { countContextTokens } from "../token-counter.js";
 import {
   getSettingPath,
   listConversationSessions,
@@ -83,6 +87,10 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
+  const [thinking, setThinking] = useState("");
+  const [thinkingCollapsed, setThinkingCollapsed] = useState(false);
+  const [loadingTick, setLoadingTick] = useState(0);
+  const [projectMemory, setProjectMemory] = useState("");
   const [runtimeConfig, setRuntimeConfig] = useState<AppConfig>(config);
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [paletteIndex, setPaletteIndex] = useState(0);
@@ -131,6 +139,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   const recentActivity = useMemo(() => buildRecentActivitySummary(sanitizedMessages), [sanitizedMessages]);
   const subagentTasks = useMemo(() => extractSubagentTasks(sanitizedMessages), [sanitizedMessages]);
   const selectedSubagentTask = useMemo(() => subagentTasks[taskPanelIndex] ?? null, [subagentTasks, taskPanelIndex]);
+  const isWelcomeView = useMemo(() => sanitizedMessages.length === 0, [sanitizedMessages.length]);
   const workspaceIndexSummary = useMemo(() => {
     return [
       `Root: ${workspaceIndex.rootDir}`,
@@ -215,7 +224,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         run: async () => {
           setStatus("Command help");
           setNotice(
-            "Slash commands: /help /status /tasks /index [query] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
+            "Shortcuts: Ctrl+C interrupt/exit, Esc interrupt, Ctrl+D exit on empty prompt, Ctrl+L clear screen, Ctrl+U clear input, Ctrl+R restore, Ctrl+K palette, Ctrl+T tasks, Ctrl+P/N prompt history. Slash: /help /status /tasks /index [query] /search <query> /compact [keep_recent] /memory [show|add <note>] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
           );
         },
       },
@@ -243,6 +252,12 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         kind: "action",
         name: "index",
         description: "Show the workspace index, or grep with a query.",
+      },
+      {
+        kind: "insert",
+        name: "search",
+        template: "/search ",
+        description: "Run agentic read-only project search.",
       },
       {
         kind: "insert",
@@ -319,13 +334,66 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         template: "/plugin ",
         description: "Install, activate, or list plugins.",
       },
+      {
+        kind: "insert",
+        name: "compact",
+        template: "/compact ",
+        description: "Compress older conversation history.",
+      },
+      {
+        kind: "insert",
+        name: "memory",
+        template: "/memory ",
+        description: "Show or append project MEMORY.md notes.",
+      },
     ];
   }, []);
 
   useInput((input, key) => {
-    if (key.ctrl && input === "c") {
-      abortRef.current?.abort();
+    if (key.ctrl && (input === "c" || input === "\u0003")) {
+      if (isSending) {
+        abortRef.current?.abort();
+        setThinking("");
+        setStatus("Interrupted");
+        setNotice("Generation interrupted (Ctrl+C).");
+        return;
+      }
       exit();
+      return;
+    }
+
+    if (key.ctrl && input === "d") {
+      if (!draft.trim() && !isSending) {
+        exit();
+      }
+      return;
+    }
+
+    if (key.ctrl && input === "l") {
+      process.stdout.write("\x1Bc");
+      setStatus("Screen cleared");
+      setNotice("Terminal cleared (Ctrl+L).");
+      return;
+    }
+
+    if (key.ctrl && input === "u") {
+      setDraft("");
+      setHistoryCursor(null);
+      return;
+    }
+
+    if (key.ctrl && input === "y") {
+      if (thinking.trim()) {
+        setThinkingCollapsed((current) => !current);
+      }
+      return;
+    }
+
+    if (key.escape && isSending) {
+      abortRef.current?.abort();
+      setThinking("");
+      setStatus("Interrupted");
+      setNotice("Generation interrupted (Esc).");
       return;
     }
 
@@ -628,6 +696,18 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     }
   }, [filteredSlashCommands.length, slashPickerIndex]);
 
+  useEffect(() => {
+    if (!isSending) {
+      setLoadingTick(0);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setLoadingTick((current) => (current + 1) % 4);
+    }, 350);
+    return () => clearInterval(timer);
+  }, [isSending]);
+
   const activeAssistantManifests = useMemo(() => {
     return dedupeSkillManifests([
       ...activeSkillManifests,
@@ -647,14 +727,16 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   }, [draft, isPaletteOpen, isSessionPickerOpen, isSlashPickerOpen, isTaskPanelOpen, stdout.rows]);
 
   const visibleMessages = useMemo(() => {
-    const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
+    const chatMessages = sanitizedMessages.filter((message) => message.role === "user" || message.role === "assistant");
+    const maxOffset = Math.max(0, chatMessages.length - viewport.pageSize);
     const start = Math.min(scrollOffset, maxOffset);
     const end = start + viewport.pageSize;
     return {
       start,
-      end: Math.min(end, sanitizedMessages.length),
-      items: sanitizedMessages.slice(start, end),
+      end: Math.min(end, chatMessages.length),
+      items: chatMessages.slice(start, end),
       maxOffset,
+      total: chatMessages.length,
     };
   }, [sanitizedMessages, scrollOffset, viewport.pageSize]);
 
@@ -711,6 +793,23 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         setStatus("Policy load error");
       });
 
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void loadProjectMemory(process.cwd())
+      .then((memory) => {
+        if (alive) {
+          setProjectMemory(memory);
+        }
+      })
+      .catch((cause) => {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(`Failed to load project memory: ${message}`);
+      });
     return () => {
       alive = false;
     };
@@ -815,6 +914,8 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     setPromptHistory((current) => [...current, sanitizeDraftInput(content)]);
     setHistoryCursor(null);
     setDraft("");
+    setThinking("");
+    setThinkingCollapsed(false);
     setIsPinnedToBottom(true);
     setMessages((current) => {
       const next = [
@@ -834,27 +935,45 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       const freshIndex = await loadWorkspaceIndexContext(process.cwd(), content);
       setWorkspacePolicy(freshPolicy);
       setWorkspaceIndex(freshIndex);
+      const compactedMessages = await compactToolMessages(sanitizedMessages, process.cwd());
+      const tokenCount = await countContextTokens(runtimeConfig, compactedMessages);
+      const prepared = prepareContextForRequest(compactedMessages, tokenCount.tokens, 12_000);
+      if (prepared.stage !== "none") {
+        setStatus(prepared.stage === "light" ? "Context compacted (light)" : "Context compacted (heavy)");
+        setNotice(
+          `Auto-compaction: ${prepared.stage}, dropped ${prepared.droppedCount} messages, tokens≈${prepared.tokenEstimate} (${tokenCount.source}).`,
+        );
+        if (prepared.stage === "heavy") {
+          void consolidateLongTermMemory(compactedMessages);
+        }
+      }
       const requestConversation = [
         {
           role: "system" as const,
           content: composeSystemPrompt(
-            runtimeConfig,
-            activeAssistantManifests,
-            activePluginContexts,
-            buildWorkspacePolicyPrompt(freshPolicy),
-            buildWorkspaceIndexPrompt(freshIndex),
-          ),
+                runtimeConfig,
+                activeAssistantManifests,
+                activePluginContexts,
+                buildWorkspacePolicyPrompt(freshPolicy),
+                buildWorkspaceIndexPrompt(freshIndex),
+                projectMemory,
+              ),
         },
-        ...sanitizedMessages,
+        ...prepared.messages,
         { role: "user" as const, content },
       ];
 
-      if (runtimeConfig.mode === "agent") {
+      const shouldRunAgent = runtimeConfig.mode === "agent" || shouldUseAgentForWorkspaceTask(content);
+      if (shouldRunAgent) {
+        if (runtimeConfig.mode !== "agent") {
+          setNotice("Detected workspace file-operation intent. Auto-routing this turn to agent tools.");
+        }
         const result = await runAgentTurn(
           runtimeConfig,
           requestConversation,
           activeSkillManifests,
           controller.signal,
+          { activePluginNames },
         );
         setMessages(result.messages);
       } else {
@@ -875,6 +994,9 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
               };
               return next;
             });
+          },
+          (token) => {
+            setThinking((current) => `${current}${token}`);
           },
           controller.signal,
         );
@@ -902,6 +1024,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       assistantIndex.current = null;
       abortRef.current = null;
       setIsSending(false);
+      setThinkingCollapsed(true);
     }
   };
 
@@ -915,7 +1038,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     switch (name) {
       case "help":
         setNotice(
-          "Slash commands: /help /status /tasks /index [query] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
+          "Shortcuts: Ctrl+C interrupt/exit, Esc interrupt, Ctrl+D exit on empty prompt, Ctrl+L clear screen, Ctrl+U clear input, Ctrl+R restore, Ctrl+K palette, Ctrl+T tasks, Ctrl+P/N prompt history. Slash: /help /status /tasks /index [query] /search <query> /compact [keep_recent] /memory [show|add <note>] /mode /model /baseurl /temperature /max /system /clear /resume /sessions /config /skill /plugin /init",
         );
         setStatus("Command help");
         return;
@@ -940,6 +1063,131 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         setWorkspaceIndex(freshIndex);
         setStatus(query ? "Workspace grep" : "Workspace index");
         setNotice(query ? formatWorkspaceGrepStatus(freshIndex) : formatWorkspaceIndexStatus(freshIndex));
+        return;
+      }
+      case "search": {
+        const query = argument.trim();
+        if (!query) {
+          setError("Usage: /search <query>");
+          setStatus("Command error");
+          return;
+        }
+
+        setIsSending(true);
+        setThinking("");
+        setStatus("Agentic search running...");
+        setNotice("Read-only search requested. OpenAI-compatible provider uses TAOR tools; Anthropic provider falls back to prompt-based search.");
+        setIsPinnedToBottom(true);
+
+        const controller = new AbortController();
+        abortRef.current = controller;
+
+        try {
+          const anthropicMode = /anthropic/i.test(runtimeConfig.baseUrl);
+          if (anthropicMode) {
+            const fallbackPrompt = [
+              "Search this repository in read-only mode.",
+              "You must reason from the provided workspace index and prior messages only.",
+              "Do not claim to have executed tools.",
+              `Query: ${query}`,
+            ].join("\n");
+            setDraft(fallbackPrompt);
+            setStatus("Search fallback prepared");
+            setNotice("Anthropic provider detected: inserted fallback prompt (no tool-calling) into input box.");
+            return;
+          }
+
+          const compactedMessages = await compactToolMessages(sanitizedMessages, process.cwd());
+          const tokenCount = await countContextTokens(runtimeConfig, compactedMessages);
+          const prepared = prepareContextForRequest(compactedMessages, tokenCount.tokens, 12_000);
+          const requestConversation: ChatMessage[] = [
+            {
+              role: "system",
+              content:
+                "Perform agentic search in this repository with read-only primitives only. Use read(kind=list|glob|file|grep) iteratively before final answer.",
+            },
+            ...prepared.messages,
+            { role: "user", content: query },
+          ];
+          const result = await runAgentTurn(runtimeConfig, requestConversation, activeSkillManifests, controller.signal, {
+            readOnly: true,
+            allowSubagents: false,
+            activePluginNames,
+          });
+          setMessages(result.messages);
+          setStatus("Agentic search complete");
+          setNotice(`Search completed with ${result.toolCount} tool calls.`);
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          setError(message);
+          setStatus("Search error");
+        } finally {
+          abortRef.current = null;
+          setIsSending(false);
+        }
+        return;
+      }
+      case "compact": {
+        const keepRecent = Math.max(4, Number.parseInt(argument || "12", 10) || 12);
+        if (sanitizedMessages.length <= keepRecent + 2) {
+          setStatus("Compact skipped");
+          setNotice("Conversation is already short.");
+          return;
+        }
+
+        const cut = Math.max(0, sanitizedMessages.length - keepRecent);
+        const older = sanitizedMessages.slice(0, cut);
+        const recent = sanitizedMessages.slice(cut);
+        const transcript = older
+          .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+          .join("\n\n")
+          .slice(0, 32000);
+        const summary = await createChatCompletion(
+          runtimeConfig,
+          [
+            { role: "system", content: "Summarize the prior conversation into concise bullet points with decisions, constraints, and pending tasks." },
+            { role: "user", content: transcript },
+          ],
+          {},
+        );
+        const summaryText = summary.choices?.[0]?.message?.content?.trim() || "No summary generated.";
+        const compacted: ChatMessage[] = [
+          {
+            role: "assistant",
+            content: `Conversation summary (compacted):\n${summaryText}`,
+          },
+          ...recent,
+        ];
+        setMessages(compacted);
+        setStatus("Conversation compacted");
+        setNotice(`Compacted ${older.length} messages; kept ${recent.length} recent messages.`);
+        return;
+      }
+      case "memory": {
+        const [subcommand, ...memoryRest] = argument.split(/\s+/);
+        const payload = memoryRest.join(" ").trim();
+        if (!subcommand || subcommand === "show") {
+          const memory = await loadProjectMemory(process.cwd());
+          setProjectMemory(memory);
+          setStatus("Project memory");
+          setNotice(memory.trim() ? memory : `No memory yet. Path: ${getProjectMemoryPath(process.cwd())}`);
+          return;
+        }
+        if (subcommand === "add") {
+          if (!payload) {
+            setError("Usage: /memory add <note>");
+            setStatus("Command error");
+            return;
+          }
+          await appendProjectMemory(payload, process.cwd());
+          const memory = await loadProjectMemory(process.cwd());
+          setProjectMemory(memory);
+          setStatus("Memory updated");
+          setNotice(`Saved to ${getProjectMemoryPath(process.cwd())}`);
+          return;
+        }
+        setError("Usage: /memory [show|add <note>]");
+        setStatus("Command error");
         return;
       }
       case "mode": {
@@ -1499,6 +1747,41 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     }
   }
 
+  async function consolidateLongTermMemory(history: ChatMessage[]): Promise<void> {
+    try {
+      const transcript = history
+        .slice(Math.max(0, history.length - 48))
+        .map((message) => `${message.role.toUpperCase()}: ${message.content}`)
+        .join("\n\n")
+        .slice(0, 32000);
+      if (!transcript.trim()) {
+        return;
+      }
+
+      const response = await createChatCompletion(
+        runtimeConfig,
+        [
+          {
+            role: "system",
+            content:
+              "Extract durable project knowledge only: architecture decisions, constraints, gotchas, and repeated fixes. Return 3-8 concise bullets.",
+          },
+          { role: "user", content: transcript },
+        ],
+        {},
+      );
+      const notes = response.choices?.[0]?.message?.content?.trim() ?? "";
+      if (!notes) {
+        return;
+      }
+      await appendProjectMemory(notes, process.cwd());
+      const latestMemory = await loadProjectMemory(process.cwd());
+      setProjectMemory(latestMemory);
+    } catch {
+      // non-blocking best effort
+    }
+  }
+
   function closeSessionPicker(): void {
     setIsSessionPickerOpen(false);
     setSessionPickerLoading(false);
@@ -1627,7 +1910,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     const tasks: SubagentTaskRecord[] = [];
     for (let index = 0; index < sessionMessages.length; index += 1) {
       const message = sessionMessages[index];
-      if (message.role !== "tool" || message.name !== "spawn_subagent") {
+      if (message.role !== "tool" || (message.name !== "spawn_subagent" && message.name !== "spawn_subagents")) {
         continue;
       }
 
@@ -1706,7 +1989,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     const sign = offsetMinutes >= 0 ? "+" : "-";
     const offsetHours = pad(Math.floor(Math.abs(offsetMinutes) / 60));
     const offsetMins = pad(Math.abs(offsetMinutes) % 60);
-    return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetMins}`;
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} (UTC${sign}${offsetHours}:${offsetMins})`;
   }
 
 function dedupeSkillManifests(manifests: SkillManifest[]): SkillManifest[] {
@@ -1729,23 +2012,9 @@ function pathBasename(value: string): string {
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Box marginBottom={1} borderStyle="round" borderColor="cyan">
-        <Box flexDirection="column" paddingX={1} paddingY={0}>
-          <Text color="cyanBright" bold>
-            Status: {status}
-          </Text>
-          <Text color="white">
-            Mode: {runtimeConfig.mode} | Model: {runtimeConfig.model} | Session: {sessionTitle} ({activeSession.id.slice(0, 8)})
-          </Text>
-          <Text color="white">
-            Policy: {workspacePolicy.sourcePath ? pathBasename(workspacePolicy.sourcePath) : "MINIMAX.md missing"} | Hooks: {workspacePolicy.hookFiles.length === 0 ? "none" : `${workspacePolicy.hookFiles.length} file(s)`}
-          </Text>
-          <Text color="white">
-            Index: {workspaceIndex.fileCount} files | {workspaceIndex.codeFileCount} code files
-          </Text>
-        </Box>
-      </Box>
+      
 
+      {isWelcomeView ? (
       <Box marginBottom={1} borderStyle="double" borderColor="cyan">
         <Box width={24} flexDirection="column" paddingX={1} paddingY={0}>
           <Text color="cyanBright" bold>
@@ -1859,7 +2128,7 @@ function pathBasename(value: string): string {
             <Text color="yellow"> spawn_subagent</Text>
           </Text>
           <Text color="greenBright">
-            Ctrl+T opens the task queue
+            Ctrl+C/Esc interrupt | Ctrl+L clear | Ctrl+U clear input
           </Text>
           <Text color="magentaBright" bold>
             Policy
@@ -1884,8 +2153,9 @@ function pathBasename(value: string): string {
           <Text color="greenBright">{recentActivity}</Text>
         </Box>
       </Box>
+      ) : null}
 
-      {notice ? (
+      {notice && isWelcomeView ? (
         <Box marginBottom={1}>
           <Text color="blueBright">{notice}</Text>
         </Box>
@@ -1897,15 +2167,31 @@ function pathBasename(value: string): string {
         </Box>
       ) : null}
 
+      {thinking.trim() ? (
+        <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor="yellow">
+          <Box paddingX={1} flexDirection="column">
+            <Text color="yellowBright" bold>
+              Thinking {thinkingCollapsed ? "(collapsed)" : "(expanded)"} {isSending ? "" : "• Ctrl+Y to expand"}
+            </Text>
+            {!thinkingCollapsed ? <Text color="gray">⎿ {sanitizeDisplayText(thinking)}</Text> : null}
+            {isSending ? <Text color="yellow">* Simmering... (thinking)</Text> : null}
+          </Box>
+        </Box>
+      ) : null}
+
       <Box flexDirection="column" marginBottom={1}>
         <Text dimColor>
           Follow: {isPinnedToBottom ? "on" : "off"} | Pinned: {isPinnedToBottom ? "bottom" : "free"} | View:{" "}
-          {sanitizedMessages.length === 0
+          {visibleMessages.items.length === 0
             ? "0-0"
-            : `${visibleMessages.start + 1}-${visibleMessages.end}`} / {sanitizedMessages.length}
+            : `${visibleMessages.start + 1}-${visibleMessages.end}`} / {visibleMessages.total}
         </Text>
         <Text dimColor>
-          {visibleMessages.end < sanitizedMessages.length ? "More below" : isPinnedToBottom ? "Pinned to latest" : "Manual scroll"}
+          {visibleMessages.end < visibleMessages.total
+            ? "More below"
+            : isPinnedToBottom
+              ? "Pinned to latest"
+              : "Manual scroll"}
         </Text>
       </Box>
 
@@ -1913,14 +2199,19 @@ function pathBasename(value: string): string {
         {visibleMessages.items.map((message, index) => {
           const isAssistant = message.role === "assistant";
           const label = isAssistant ? "assistant" : "you";
+          const bodyText = sanitizeDisplayText(message.content) || (isAssistant && isSending ? ".".repeat(Math.max(3, loadingTick + 1)) : "");
           return (
             <Box key={`${label}-${visibleMessages.start + index}`} flexDirection="column">
               <Text color={isAssistant ? "green" : "yellow"} bold>
                 {label}
               </Text>
-              <Text wrap="wrap">
-                {sanitizeDisplayText(message.content) || (isAssistant && isSending ? "..." : "")}
-              </Text>
+              {isAssistant ? (
+                <Text wrap="wrap">{bodyText}</Text>
+              ) : (
+                <Text wrap="wrap" backgroundColor="black">
+                  {bodyText}
+                </Text>
+              )}
             </Box>
           );
         })}
@@ -1934,8 +2225,11 @@ function pathBasename(value: string): string {
           {renderDraft(draft, stdout.columns ?? 80)}
         </Box>
         <Text dimColor>
-          PgUp/PgDn or Up/Down to scroll message history. Type /resume to pick a saved session. Ctrl+T opens task queue.
+          PgUp/PgDn or Up/Down to scroll history. Ctrl+C/Esc interrupt. Ctrl+K palette. Ctrl+T tasks. Ctrl+D exits on empty prompt.
         </Text>
+        {isSending ? (
+          <Text color="cyanBright">Generating{".".repeat(Math.max(3, loadingTick + 1))}</Text>
+        ) : null}
       </Box>
 
       {isTaskPanelOpen ? (
@@ -2258,6 +2552,7 @@ function composeSystemPrompt(
   plugins: PluginRuntimeContext[],
   workspacePolicyPrompt = "",
   workspaceIndexPrompt = "",
+  projectMemory = "",
 ): string {
   const policyPrompt = workspacePolicyPrompt.trim();
   const indexPrompt = workspaceIndexPrompt.trim();
@@ -2283,7 +2578,10 @@ function composeSystemPrompt(
           ...skills.map((skill) => `- ${skill.name}: ${skill.description}\n${skill.instructions}`),
         ].join("\n")
       : "";
-  return [config.systemPrompt.trim(), policyPrompt, indexPrompt, modePrompt, pluginPrompt, skillPrompt]
+  const memoryPrompt = projectMemory.trim()
+    ? `Project memory from MEMORY.md:\n${projectMemory.trim().slice(0, 12000)}`
+    : "";
+  return [config.systemPrompt.trim(), policyPrompt, indexPrompt, memoryPrompt, modePrompt, pluginPrompt, skillPrompt]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -2295,7 +2593,8 @@ function getModePrompt(mode: AppConfig["mode"]): string {
     case "agent":
       return [
         "Mode: agent. Be concise, action-oriented, and treat the conversation like an execution workspace.",
-        "You can inspect files, edit files, run non-interactive workspace commands, inspect git, search the web, and delegate subagents with tools.",
+        "Use TAOR loop (Think-Act-Observe-Repeat) with primitives: read, write, execute, connect, plus subagents for decomposition.",
+        "When using connect, always set kind explicitly (web_search, web_fetch, mcp_list_tools, mcp_call_tool).",
         "Prefer the smallest useful command, avoid destructive actions unless clearly requested, and report what changed.",
       ].join(" ");
     case "chat":
@@ -2311,6 +2610,32 @@ function parseMode(value: string): AppConfig["mode"] | null {
   }
   return null;
 }
+
+function shouldUseAgentForWorkspaceTask(input: string): boolean {
+  const text = input.toLowerCase().trim();
+  if (!text) {
+    return false;
+  }
+
+  const workspaceIntentPatterns = [
+    /创建.*文件/,
+    /新建.*文件/,
+    /写入.*文件/,
+    /修改.*文件/,
+    /编辑.*文件/,
+    /更新.*文件/,
+    /在当前目录.*(创建|新建|写入|修改|编辑)/,
+    /\bcreate\b.*\bfile\b/,
+    /\bnew\b.*\bfile\b/,
+    /\bwrite\b.*\bfile\b/,
+    /\bmodify\b.*\bfile\b/,
+    /\bedit\b.*\bfile\b/,
+    /\bupdate\b.*\bfile\b/,
+  ];
+
+  return workspaceIntentPatterns.some((pattern) => pattern.test(text));
+}
+
 
 function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, "");

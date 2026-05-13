@@ -44,7 +44,7 @@ const FIELDS: Field[] = [
     key: "mode",
     label: "Mode",
     hint: "chat, plan, or agent",
-    placeholder: "chat",
+    placeholder: "agent",
   },
   {
     key: "systemPrompt",
@@ -109,7 +109,7 @@ export function ConfigWizard({ initialConfig }: ConfigWizardProps) {
       apiKey: draft.apiKey ? "configured" : "not set",
       baseUrl: draft.baseUrl ?? "https://api.minimax.io",
       model: draft.model ?? "MiniMax-M2.7",
-      mode: draft.mode ?? "chat",
+      mode: draft.mode ?? "agent",
       systemPrompt: draft.systemPrompt ? "configured" : "default",
       temperature: draft.temperature?.toString() ?? "1",
       maxTokens: draft.maxTokens?.toString() ?? "1024",
@@ -144,7 +144,7 @@ export function ConfigWizard({ initialConfig }: ConfigWizardProps) {
     } else if (currentField.key === "model") {
       nextDraft.model = nextValue || "MiniMax-M2.7";
     } else if (currentField.key === "mode") {
-      const mode = normalizeMode(nextValue || "chat");
+      const mode = normalizeMode(nextValue || "agent");
       if (!mode) {
         setError("Mode must be chat, plan, or agent.");
         return;
@@ -259,7 +259,7 @@ function getInitialValue(key: FieldKey, draft: StoredConfig): string {
     case "model":
       return draft.model ?? "MiniMax-M2.7";
     case "mode":
-      return draft.mode ?? "chat";
+      return draft.mode ?? "agent";
     case "systemPrompt":
       return draft.systemPrompt ?? "You are a helpful assistant.";
     case "temperature":

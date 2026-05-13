@@ -2,11 +2,12 @@ import fs from "node:fs/promises";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
-import { createChatCompletion } from "./api/minimax.js";
+import { createChatCompletion, streamChatCompletionWithTools } from "./api/minimax.js";
 import { buildWorkspacePolicyPrompt, loadWorkspacePolicyContext } from "./workspace-policy.js";
 import { buildWorkspaceIndexPrompt, loadWorkspaceIndexContext } from "./workspace-index.js";
-import { gitAdd, gitBranch, gitCommit, gitDiff, gitLog, gitStatus } from "./workspace-git.js";
 import { webFetch, webSearch } from "./workspace-web.js";
+import { runToolHooks } from "./hook-runtime.js";
+import { callMcpTool, listMcpTools } from "./mcp-runtime.js";
 import type { AppConfig, ChatMessage, ToolCall } from "./types.js";
 import type { SkillManifest } from "./types.js";
 
@@ -20,6 +21,8 @@ export interface AgentTurnResult {
 
 export interface AgentTurnOptions {
   allowSubagents?: boolean;
+  readOnly?: boolean;
+  activePluginNames?: string[];
 }
 
 export async function runAgentTurn(
@@ -63,245 +66,181 @@ export async function runAgentTurn(
   let toolCount = 0;
 
   for (let round = 0; round < 8; round += 1) {
-    const response = await createChatCompletion(
+    const inFlightToolRuns = new Map<string, Promise<{ message: ChatMessage }>>();
+    const streamed = await streamChatCompletionWithTools(
       config,
       workingMessages,
       {
         tools: toolDefinitions,
         tool_choice: "auto",
       },
+      {
+        onToolCall: (call) => {
+          if (inFlightToolRuns.has(call.id)) {
+            return;
+          }
+          const promise = executeToolCall(call, config, skillManifests, signal, options);
+          inFlightToolRuns.set(call.id, promise);
+        },
+      },
       signal,
     );
 
-    const assistant = response.choices?.[0]?.message;
-    if (!assistant) {
-      break;
-    }
-
     const assistantMessage: ChatMessage = {
       role: "assistant",
-      content: assistant.content ?? "",
-      toolCalls: assistant.tool_calls,
+      content: streamed.content ?? "",
+      toolCalls: streamed.toolCalls,
     };
     workingMessages.push(assistantMessage);
-    finalText = assistant.content ?? finalText;
+    finalText = streamed.content ?? finalText;
 
-    const calls = assistant.tool_calls ?? [];
-    if (calls.length === 0) {
+    const calls = streamed.toolCalls ?? [];
+    const latestUserQuery =
+      [...workingMessages]
+        .reverse()
+        .find((message) => message.role === "user")
+        ?.content
+        ?.trim() ?? "";
+    const fallbackCalls = calls.length === 0
+      ? [
+        ...parseInlineSendBlocks(streamed.content ?? ""),
+        ...parseMiniMaxToolCallBlocks(streamed.content ?? "", latestUserQuery),
+      ]
+      : [];
+    const allCalls = [...calls, ...fallbackCalls];
+    if (allCalls.length === 0) {
       break;
     }
 
-    for (const call of calls) {
-      const toolResult = await executeToolCall(call, config, skillManifests, signal, options);
+    for (const call of allCalls) {
+      const toolResult = inFlightToolRuns.get(call.id)
+        ? await inFlightToolRuns.get(call.id)!
+        : await executeToolCall(call, config, skillManifests, signal, options);
       workingMessages.push(toolResult.message);
       toolCount += 1;
     }
+  }
+
+  if (!finalText.trim()) {
+    const fallback = await createChatCompletion(
+      config,
+      [
+        ...workingMessages,
+        {
+          role: "system",
+          content: "Provide a direct final answer for the user based on the available tool outputs. Do not call tools.",
+        },
+      ],
+      {},
+      signal,
+    );
+    const content = fallback.choices?.[0]?.message?.content ?? "";
+    if (content.trim()) {
+      workingMessages.push({
+        role: "assistant",
+        content,
+      });
+      finalText = content;
+    }
+  }
+
+  if (!finalText.trim()) {
+    finalText = "I could not produce a final response this turn. Please retry with a more specific request.";
+    workingMessages.push({
+      role: "assistant",
+      content: finalText,
+    });
   }
 
   return { messages: workingMessages, finalText, toolCount };
 }
 
 function getToolDefinitions(options: AgentTurnOptions): Array<Record<string, unknown>> {
+  const readOnly = options.readOnly === true;
   const tools: Array<Record<string, unknown>> = [
     {
       type: "function",
       function: {
-        name: "list_dir",
-        description: "List files and folders in a workspace path.",
+        name: "read",
+        description: "Read primitive: list files, glob files, read a file, or grep text in workspace.",
         parameters: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Relative path from the workspace root." },
+            kind: { type: "string", enum: ["list", "glob", "file", "grep"] },
+            path: { type: "string", description: "Relative path. Defaults to workspace root." },
+            pattern: { type: "string", description: "Glob pattern when kind=glob." },
+            query: { type: "string", description: "Search query when kind=grep." },
           },
-          required: ["path"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "read_file",
-        description: "Read a text file in the workspace.",
-        parameters: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Relative path from the workspace root." },
-          },
-          required: ["path"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "search_text",
-        description: "Search for text inside workspace files.",
-        parameters: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Relative path or directory to search." },
-            query: { type: "string", description: "Text to search for." },
-          },
-          required: ["path", "query"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "write_file",
-        description: "Write a text file in the workspace.",
-        parameters: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Relative path from the workspace root." },
-            content: { type: "string", description: "Text content to write." },
-          },
-          required: ["path", "content"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "run_command",
-        description: "Run a non-interactive shell command in the workspace.",
-        parameters: {
-          type: "object",
-          properties: {
-            command: { type: "string", description: "Command to execute." },
-            args: {
-              type: "array",
-              items: { type: "string" },
-              description: "Command arguments.",
-            },
-            cwd: { type: "string", description: "Workspace-relative working directory." },
-            timeout_ms: {
-              type: "number",
-              description: "Timeout in milliseconds.",
-            },
-          },
-          required: ["command"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "git_status",
-        description: "Show git status for the current workspace.",
-        parameters: {
-          type: "object",
-          properties: {},
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "git_diff",
-        description: "Show git diff for the current workspace.",
-        parameters: {
-          type: "object",
-          properties: {
-            staged: { type: "boolean", description: "Show staged diff instead of working tree diff." },
-            paths: {
-              type: "array",
-              items: { type: "string" },
-              description: "Optional paths to limit the diff.",
-            },
-          },
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "git_log",
-        description: "Show recent git history.",
-        parameters: {
-          type: "object",
-          properties: {
-            count: { type: "number", description: "Maximum number of commits to show." },
-          },
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "git_branch",
-        description: "List git branches.",
-        parameters: {
-          type: "object",
-          properties: {},
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "git_add",
-        description: "Stage git paths.",
-        parameters: {
-          type: "object",
-          properties: {
-            paths: {
-              type: "array",
-              items: { type: "string" },
-              description: "Paths to stage.",
-            },
-          },
-          required: ["paths"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "git_commit",
-        description: "Create a git commit.",
-        parameters: {
-          type: "object",
-          properties: {
-            message: { type: "string", description: "Commit message." },
-            all: { type: "boolean", description: "Stage tracked changes before committing." },
-          },
-          required: ["message"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "web_search",
-        description: "Search the web and return top results.",
-        parameters: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "Search query." },
-          },
-          required: ["query"],
-        },
-      },
-    },
-    {
-      type: "function",
-      function: {
-        name: "web_fetch",
-        description: "Fetch a web page and extract readable content.",
-        parameters: {
-          type: "object",
-          properties: {
-            url: { type: "string", description: "URL to fetch." },
-          },
-          required: ["url"],
+          required: ["kind"],
         },
       },
     },
   ];
 
-  if (options.allowSubagents !== false) {
+  if (!readOnly) {
+    tools.push(
+      {
+        type: "function",
+        function: {
+          name: "write",
+          description: "Write primitive: write a UTF-8 text file in workspace.",
+          parameters: {
+            type: "object",
+            properties: {
+              path: { type: "string", description: "Relative path from the workspace root." },
+              content: { type: "string", description: "Text content to write." },
+            },
+            required: ["path", "content"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "execute",
+          description: "Execute primitive: run non-interactive command in workspace.",
+          parameters: {
+            type: "object",
+            properties: {
+              command: { type: "string", description: "Command to execute." },
+              args: {
+                type: "array",
+                items: { type: "string" },
+                description: "Command arguments.",
+              },
+              cwd: { type: "string", description: "Workspace-relative working directory." },
+              timeout_ms: {
+                type: "number",
+                description: "Timeout in milliseconds.",
+              },
+            },
+            required: ["command"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "connect",
+          description: "Connect primitive: access external sources such as web search/fetch.",
+          parameters: {
+            type: "object",
+            properties: {
+              kind: { type: "string", enum: ["web_search", "web_fetch"] },
+              query: { type: "string", description: "Search query when kind=web_search." },
+              url: { type: "string", description: "URL when kind=web_fetch." },
+              server: { type: "string", description: "MCP server name when kind=mcp_call_tool." },
+              tool: { type: "string", description: "MCP tool name when kind=mcp_call_tool." },
+              arguments: { type: "object", description: "MCP tool arguments when kind=mcp_call_tool." },
+            },
+            required: ["kind"],
+          },
+        },
+      },
+    );
+  }
+
+  if (!readOnly && options.allowSubagents !== false) {
     tools.push({
       type: "function",
       function: {
@@ -314,6 +253,30 @@ function getToolDefinitions(options: AgentTurnOptions): Array<Record<string, unk
             context: { type: "string", description: "Optional extra context for the subagent." },
           },
           required: ["goal"],
+        },
+      },
+    });
+    tools.push({
+      type: "function",
+      function: {
+        name: "spawn_subagents",
+        description: "Run multiple subagent tasks in parallel; failures are isolated per task.",
+        parameters: {
+          type: "object",
+          properties: {
+            tasks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  goal: { type: "string" },
+                  context: { type: "string" },
+                },
+                required: ["goal"],
+              },
+            },
+          },
+          required: ["tasks"],
         },
       },
     });
@@ -331,76 +294,150 @@ async function executeToolCall(
 ): Promise<{ message: ChatMessage }> {
   const name = call.function.name;
   const args = parseToolArguments(call.function.arguments);
+  const preHook = await runToolHooks("preTool", { toolName: name, cwd: process.cwd() });
+  if (!preHook.ok) {
+    return makeToolMessage(call, `Hook blocked tool execution.\n${preHook.logs.join("\n")}`);
+  }
 
+  let output = "";
   switch (name) {
-    case "list_dir": {
-      const result = await listDirectory(toStringArg(args.path, "."));
-      return makeToolMessage(call, result);
+  case "read":
+    output = await readPrimitive(args);
+    break;
+  case "write":
+    if (options.readOnly) {
+      output = "write is disabled in read-only mode.";
+      break;
     }
-    case "read_file": {
-      const result = await readFileSafe(toStringArg(args.path, "."));
-      return makeToolMessage(call, result);
+    output = await writeWorkspaceFile(toStringArg(args.path, "."), toStringArg(args.content, ""));
+    break;
+  case "execute":
+    if (options.readOnly) {
+      output = "execute is disabled in read-only mode.";
+      break;
     }
-    case "search_text": {
-      const result = await searchWorkspace(toStringArg(args.path, "."), toStringArg(args.query, ""));
-      return makeToolMessage(call, result);
+    output = await runCommandTool(args);
+    break;
+  case "connect":
+    if (options.readOnly) {
+      output = "connect is disabled in read-only mode.";
+      break;
     }
-    case "write_file": {
-      const result = await writeWorkspaceFile(toStringArg(args.path, "."), toStringArg(args.content, ""));
-      return makeToolMessage(call, result);
+    output = await connectPrimitive(args, options.activePluginNames ?? []);
+    break;
+  case "spawn_subagent":
+    if (options.readOnly) {
+      output = "spawn_subagent is disabled in read-only mode.";
+      break;
     }
-    case "run_command": {
-      const result = await runCommandTool(args);
-      return makeToolMessage(call, result);
+    if (options.allowSubagents === false) {
+      output = "Subagents are disabled in this context.";
+      break;
     }
-    case "git_status": {
-      const result = await gitStatus();
-      return makeToolMessage(call, result);
+    output = await runSubagentTask(config, args, skillManifests, signal);
+    break;
+  case "spawn_subagents":
+    if (options.readOnly) {
+      output = "spawn_subagents is disabled in read-only mode.";
+      break;
     }
-    case "git_diff": {
-      const staged = Boolean(args.staged);
-      const paths = Array.isArray(args.paths) ? args.paths.map((value) => toStringArg(value, "")).filter(Boolean) : [];
-      const result = await gitDiff(process.cwd(), staged, paths);
-      return makeToolMessage(call, result);
+    if (options.allowSubagents === false) {
+      output = "Subagents are disabled in this context.";
+      break;
     }
-    case "git_log": {
-      const count = typeof args.count === "number" && Number.isFinite(args.count) ? args.count : 10;
-      const result = await gitLog(process.cwd(), count);
-      return makeToolMessage(call, result);
-    }
-    case "git_branch": {
-      const result = await gitBranch(process.cwd());
-      return makeToolMessage(call, result);
-    }
-    case "git_add": {
-      const paths = Array.isArray(args.paths) ? args.paths.map((value) => toStringArg(value, "")).filter(Boolean) : [];
-      const result = await gitAdd(process.cwd(), paths);
-      return makeToolMessage(call, result);
-    }
-    case "git_commit": {
-      const message = toStringArg(args.message, "");
-      const all = Boolean(args.all);
-      const result = await gitCommit(process.cwd(), message, all);
-      return makeToolMessage(call, result);
-    }
-    case "web_search": {
-      const result = await webSearch(toStringArg(args.query, ""));
-      return makeToolMessage(call, result);
-    }
-    case "web_fetch": {
-      const result = await webFetch(toStringArg(args.url, ""));
-      return makeToolMessage(call, result);
-    }
-    case "spawn_subagent": {
-      if (options.allowSubagents === false) {
-        return makeToolMessage(call, "Subagents are disabled in this context.");
-      }
+    output = await runSubagentTasks(config, args, skillManifests, signal);
+    break;
+  default:
+    output = `Unknown tool: ${name}`;
+    break;
+  }
 
-      const result = await runSubagentTask(config, args, skillManifests, signal);
-      return makeToolMessage(call, result);
+  const postHook = await runToolHooks("postTool", { toolName: name, cwd: process.cwd() });
+  if (postHook.logs.length > 0) {
+    output = `${output}\n\n[hooks]\n${postHook.logs.join("\n")}`;
+  }
+  return makeToolMessage(call, output);
+}
+
+async function readPrimitive(args: Record<string, unknown>): Promise<string> {
+  const kind = toStringArg(args.kind, "list");
+  const relativePath = toStringArg(args.path, ".");
+  if (kind === "list") {
+    return listDirectory(relativePath);
+  }
+  if (kind === "glob") {
+    return globFiles(toStringArg(args.pattern, ""), relativePath);
+  }
+  if (kind === "file") {
+    return readFileSafe(relativePath);
+  }
+  if (kind === "grep") {
+    return searchWorkspace(relativePath, toStringArg(args.query, ""));
+  }
+  return `Unsupported read kind: ${kind}`;
+}
+
+async function connectPrimitive(args: Record<string, unknown>, activePluginNames: string[]): Promise<string> {
+  let kind = toStringArg(args.kind, "");
+  if (!kind) {
+    const hasQuery = typeof args.query === "string" && args.query.trim().length > 0;
+    const hasUrl = typeof args.url === "string" && args.url.trim().length > 0;
+    const hasMcp = typeof args.server === "string" && args.server.trim().length > 0
+      && typeof args.tool === "string" && args.tool.trim().length > 0;
+    if (hasMcp) {
+      kind = "mcp_call_tool";
+    } else if (hasUrl) {
+      kind = "web_fetch";
+    } else if (hasQuery) {
+      kind = "web_search";
     }
-    default:
-      return makeToolMessage(call, `Unknown tool: ${name}`);
+  }
+
+  if (kind === "web_search") {
+    const query = toStringArg(args.query, "");
+    if (!query.trim()) {
+      return "web_search requires a non-empty query.";
+    }
+    return webSearch(query);
+  }
+  if (kind === "web_fetch") {
+    const url = toStringArg(args.url, "");
+    if (!url.trim()) {
+      return "web_fetch requires a non-empty url.";
+    }
+    return webFetch(url);
+  }
+  if (kind === "mcp_list_tools") {
+    return listMcpTools(activePluginNames);
+  }
+  if (kind === "mcp_call_tool") {
+    return callMcpTool(
+      toStringArg(args.server, ""),
+      toStringArg(args.tool, ""),
+      (typeof args.arguments === "object" && args.arguments !== null ? args.arguments : {}) as Record<string, unknown>,
+      activePluginNames,
+    );
+  }
+  return `Unsupported connect kind: ${kind || "(empty)"}. Use one of: web_search, web_fetch, mcp_list_tools, mcp_call_tool.`;
+}
+
+async function globFiles(pattern: string, relativePath: string): Promise<string> {
+  await loadWorkspacePolicyContext();
+  const globPattern = pattern.trim();
+  if (!globPattern) {
+    return "Pattern is required.";
+  }
+
+  const cwd = resolveWorkspacePath(relativePath || ".");
+  try {
+    const { stdout } = await execFileAsync("rg", ["--files", "-g", globPattern], {
+      cwd,
+      maxBuffer: 1024 * 1024,
+    });
+    const out = stdout.trim();
+    return out.length > 0 ? out : "No files matched.";
+  } catch {
+    return "No files matched.";
   }
 }
 
@@ -636,6 +673,42 @@ async function runSubagentTask(
   ].join("\n");
 }
 
+async function runSubagentTasks(
+  config: AppConfig,
+  args: Record<string, unknown>,
+  skillManifests: SkillManifest[],
+  signal?: AbortSignal,
+): Promise<string> {
+  const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+  if (tasks.length === 0) {
+    return "No tasks provided.";
+  }
+
+  const work = tasks.map(async (item, index) => {
+    const payload = typeof item === "object" && item !== null ? (item as Record<string, unknown>) : {};
+    const goal = toStringArg(payload.goal, "");
+    const context = toStringArg(payload.context, "");
+    if (!goal) {
+      return { index, ok: false, output: "Missing goal." };
+    }
+    try {
+      const output = await runSubagentTask(config, { goal, context }, skillManifests, signal);
+      return { index, ok: true, output };
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      return { index, ok: false, output: message };
+    }
+  });
+
+  const results = await Promise.all(work);
+  return results
+    .map((result) => {
+      const status = result.ok ? "done" : "failed";
+      return `TASK ${result.index + 1} [${status}]\n${result.output}`;
+    })
+    .join("\n\n");
+}
+
 function sanitizeSubagentSection(text: string): string {
   return text.replace(/\r/g, "").trim();
 }
@@ -691,4 +764,98 @@ function makeToolMessage(call: ToolCall, output: string): { message: ChatMessage
       content: output,
     },
   };
+}
+
+function parseInlineSendBlocks(content: string): ToolCall[] {
+  const text = content.trim();
+  if (!text) {
+    return [];
+  }
+  const blocks = Array.from(text.matchAll(/<send>([\s\S]*?)<\/send>/gi));
+  const calls: ToolCall[] = [];
+  for (const block of blocks) {
+    const body = block[1] ?? "";
+    const kind = extractKv(body, "kind");
+    if (!kind) {
+      continue;
+    }
+    const args: Record<string, unknown> = { kind };
+    const query = extractKv(body, "query");
+    const url = extractKv(body, "url");
+    const server = extractKv(body, "server");
+    const tool = extractKv(body, "tool");
+    if (query) args.query = query;
+    if (url) args.url = url;
+    if (server) args.server = server;
+    if (tool) args.tool = tool;
+    calls.push({
+      id: `inline_${Math.random().toString(36).slice(2, 10)}`,
+      type: "function",
+      function: {
+        name: "connect",
+        arguments: JSON.stringify(args),
+      },
+    });
+  }
+  return calls;
+}
+
+function extractKv(text: string, key: string): string {
+  const pattern = new RegExp(`${key}\\s*=\\s*(.+)`, "i");
+  const line = text
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .find((value) => pattern.test(value));
+  if (!line) {
+    return "";
+  }
+  const match = line.match(pattern);
+  return (match?.[1] ?? "").trim();
+}
+
+function parseMiniMaxToolCallBlocks(content: string, fallbackUserQuery: string): ToolCall[] {
+  const text = content.trim();
+  if (!text) {
+    return [];
+  }
+  const blocks = Array.from(text.matchAll(/<minimax:tool_call>([\s\S]*?)<\/minimax:tool_call>/gi));
+  const calls: ToolCall[] = [];
+  for (const block of blocks) {
+    const body = block[1] ?? "";
+    const invokeMatch = body.match(/<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/i);
+    if (!invokeMatch) {
+      continue;
+    }
+    const toolName = (invokeMatch[1] ?? "").trim();
+    const parameterBody = invokeMatch[2] ?? "";
+    if (!toolName) {
+      continue;
+    }
+
+    const args: Record<string, unknown> = {};
+    const parameterMatches = Array.from(parameterBody.matchAll(/<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/gi));
+    for (const parameter of parameterMatches) {
+      const key = (parameter[1] ?? "").trim();
+      const value = (parameter[2] ?? "").trim();
+      if (!key) {
+        continue;
+      }
+      args[key] = value;
+    }
+    if (toolName === "connect" && args.kind === "web_search" && typeof args.query !== "string") {
+      if (fallbackUserQuery.trim()) {
+        args.query = fallbackUserQuery;
+      }
+    }
+
+    calls.push({
+      id: `xml_${Math.random().toString(36).slice(2, 10)}`,
+      type: "function",
+      function: {
+        name: toolName,
+        arguments: JSON.stringify(args),
+      },
+    });
+  }
+  return calls;
 }

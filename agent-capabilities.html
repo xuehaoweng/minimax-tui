@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent 能做什么</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --surface: #101933;
+      --surface-2: #0f1530;
+      --ink: #e8eeff;
+      --muted: #9db0e2;
+      --accent: #38d2c9;
+      --accent-2: #7aa9ff;
+      --ok: #58d47a;
+      --warn: #ffb366;
+      --danger: #ff6b81;
+      --radius: 16px;
+      --shadow: 0 20px 40px rgba(0,0,0,.35);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+      background:
+        radial-gradient(1200px 500px at 10% -10%, rgba(56,210,201,.18), transparent),
+        radial-gradient(900px 450px at 100% 0%, rgba(122,169,255,.18), transparent),
+        var(--bg);
+      color: var(--ink);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    .wrap {
+      width: min(1080px, 92vw);
+      margin: 0 auto;
+      padding: 48px 0 72px;
+    }
+
+    .hero {
+      border: 1px solid rgba(255,255,255,.08);
+      background: linear-gradient(155deg, rgba(16,25,51,.95), rgba(12,18,39,.96));
+      border-radius: 24px;
+      padding: 28px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -20% -55% auto;
+      width: 420px;
+      height: 420px;
+      background: radial-gradient(circle, rgba(56,210,201,.2), transparent 65%);
+      pointer-events: none;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(28px, 5vw, 48px);
+      line-height: 1.1;
+      letter-spacing: .2px;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      max-width: 760px;
+      font-size: clamp(14px, 2vw, 18px);
+    }
+
+    .chips {
+      margin-top: 18px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: #d6e2ff;
+      background: rgba(255,255,255,.03);
+    }
+
+    .grid {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 14px;
+    }
+
+    .card {
+      grid-column: span 6;
+      border: 1px solid rgba(255,255,255,.08);
+      background: linear-gradient(180deg, var(--surface), var(--surface-2));
+      border-radius: var(--radius);
+      padding: 18px;
+      transition: transform .22s ease, border-color .22s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(122,169,255,.45);
+    }
+
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      color: #d9e7ff;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .list {
+      margin-top: 16px;
+      padding-left: 18px;
+      color: #d8e5ff;
+      font-size: 14px;
+    }
+
+    .list li { margin-bottom: 8px; }
+
+    .status {
+      margin-top: 20px;
+      border-left: 4px solid var(--accent);
+      background: rgba(56,210,201,.08);
+      border-radius: 12px;
+      padding: 14px 14px 14px 12px;
+      color: #dffcf9;
+      font-size: 14px;
+    }
+
+    .legend {
+      margin-top: 20px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      color: #d7e1ff;
+    }
+
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      transform: translateY(-1px);
+    }
+
+    .ok { background: var(--ok); }
+    .warn { background: var(--warn); }
+    .danger { background: var(--danger); }
+
+    @media (max-width: 840px) {
+      .card { grid-column: span 12; }
+      .wrap { padding-top: 28px; }
+      .hero { padding: 20px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .card { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <h1>Agent 能做什么</h1>
+      <p class="subtitle">把一次自然语言需求拆成可执行步骤：读取项目、修改文件、运行命令、连接外部能力，并在失败时自动回退或重试。</p>
+      <div class="chips">
+        <span class="chip">Think-Act-Observe-Repeat</span>
+        <span class="chip">Read / Write / Execute / Connect</span>
+        <span class="chip">Sub-agent 并行</span>
+      </div>
+    </section>
+
+    <section class="grid" aria-label="Agent capabilities">
+      <article class="card">
+        <h2>1. 读懂项目</h2>
+        <p>快速索引目录结构、读取关键文件、搜索调用链，形成“任务上下文”。</p>
+        <ul class="list">
+          <li>定位入口与依赖关系</li>
+          <li>识别约束文件（策略、hooks、memory）</li>
+          <li>提取可复用实现路径</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <h2>2. 修改与创建文件</h2>
+        <p>按需求精确改动代码、文档、配置，保持最小变更集并可追溯。</p>
+        <ul class="list">
+          <li>新建页面、组件、脚本</li>
+          <li>局部修复 bug / 重构片段</li>
+          <li>遵守项目已有风格和约束</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <h2>3. 执行验证</h2>
+        <p>运行构建、测试、静态检查，自动采集错误并反馈下一轮修复。</p>
+        <ul class="list">
+          <li>构建失败定位</li>
+          <li>测试回归验证</li>
+          <li>命令输出摘要化</li>
+        </ul>
+      </article>
+
+      <article class="card">
+        <h2>4. 连接外部能力</h2>
+        <p>通过 Connect/MCP 对接外部系统，扩展工具边界而不破坏主流程。</p>
+        <ul class="list">
+          <li>Web 搜索 / 抓取</li>
+          <li>MCP tools list / call</li>
+          <li>Hook 前后置管控</li>
+        </ul>
+      </article>
+    </section>
+
+    <section class="status">
+      <strong>交互理念：</strong> 用户给目标，Agent 负责落地。任务长时自动做上下文压缩与长期记忆沉淀，确保可持续执行。
+    </section>
+
+    <div class="legend" role="note" aria-label="status legend">
+      <span><i class="dot ok"></i>可直接执行</span>
+      <span><i class="dot warn"></i>需确认配置</span>
+      <span><i class="dot danger"></i>失败可回滚/重试</span>
+    </div>
+  </main>
+</body>
+</html>
