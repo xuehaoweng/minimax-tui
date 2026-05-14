@@ -16,6 +16,7 @@ interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
       content?: string;
+      reasoning_content?: string;
       tool_calls?: ToolCall[];
       role?: string;
     };
@@ -32,8 +33,10 @@ interface AnthropicResponse {
 }
 
 interface AnthropicContentBlock {
-  type: "text" | "tool_use" | "tool_result";
+  type: "text" | "thinking" | "tool_use" | "tool_result";
   text?: string;
+  thinking?: string;
+  signature?: string;
   id?: string;
   name?: string;
   input?: Record<string, unknown>;
@@ -152,7 +155,7 @@ export async function streamChatCompletionWithTools(
   extraBody: Record<string, unknown>,
   callbacks: StreamToolCallbacks = {},
   signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[] }> {
+): Promise<{ content: string; reasoningContent: string; reasoningSignature?: string; toolCalls: ToolCall[] }> {
   const anthropicMode = isAnthropicBaseUrl(config.baseUrl);
   const anthropicTools = anthropicMode ? mapAnthropicTools(extraBody.tools) : [];
   const anthropicToolChoice = anthropicMode ? mapAnthropicToolChoice(extraBody.tool_choice) : undefined;
@@ -202,6 +205,8 @@ export async function streamChatCompletionWithTools(
   }
 
   let content = "";
+  let reasoningContent = "";
+  let reasoningSignature: string | undefined;
   const toolCalls: ToolCall[] = [];
   const seenToolCalls = new Set<string>();
   const openaiToolCalls = new Map<number, { id: string; name: string; args: string }>();
@@ -214,17 +219,29 @@ export async function streamChatCompletionWithTools(
     if (anthropicMode) {
       const type = typeof payload.type === "string" ? payload.type : "";
       if (type === "content_block_delta") {
-        const delta = (payload.delta ?? {}) as { text?: string; thinking?: string };
+        const delta = (payload.delta ?? {}) as { text?: string; thinking?: string; signature?: string };
         if (delta.text) {
           content += delta.text;
           callbacks.onText?.(delta.text);
         }
         if (delta.thinking) {
+          reasoningContent += delta.thinking;
           callbacks.onReasoning?.(delta.thinking);
+        }
+        if (delta.signature) {
+          reasoningSignature = delta.signature;
         }
       }
       if (type === "content_block_start") {
         const block = (payload.content_block ?? {}) as AnthropicContentBlock;
+        if (block.type === "thinking") {
+          if (typeof block.thinking === "string") {
+            reasoningContent = block.thinking;
+          }
+          if (typeof block.signature === "string") {
+            reasoningSignature = block.signature;
+          }
+        }
         if (block.type === "tool_use" && block.name) {
           const call: ToolCall = {
             id: block.id ?? cryptoRandomId(),
@@ -317,7 +334,7 @@ export async function streamChatCompletionWithTools(
     }
   }
 
-  return { content, toolCalls };
+  return { content, reasoningContent, reasoningSignature, toolCalls };
 }
 
 export async function createChatCompletion(
@@ -374,10 +391,14 @@ export async function createChatCompletion(
   }
 
   const json = (await response.json()) as AnthropicResponse;
+  const thinkingBlocks = (json.content ?? []).filter(
+    (part): part is AnthropicContentBlock => part.type === "thinking" && typeof part.thinking === "string",
+  );
   const content = (json.content ?? [])
     .filter((part) => part.type === "text" && typeof part.text === "string")
     .map((part) => part.text ?? "")
     .join("");
+  const reasoningContent = thinkingBlocks.map((part) => part.thinking ?? "").join("");
   const toolCalls: ToolCall[] = (json.content ?? [])
     .filter((part) => part.type === "tool_use" && typeof part.name === "string")
     .map((part) => ({
@@ -394,6 +415,7 @@ export async function createChatCompletion(
         message: {
           role: "assistant",
           content,
+          ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
           ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         },
       },
@@ -437,6 +459,14 @@ function toAnthropicMessages(messages: ChatMessage[]): AnthropicMessage[] {
 
     if (message.role === "assistant") {
       const blocks: AnthropicContentBlock[] = [];
+      const reasoning = message.reasoningContent?.trim();
+      if (reasoning) {
+        blocks.push({
+          type: "thinking",
+          thinking: reasoning,
+          ...(message.reasoningSignature ? { signature: message.reasoningSignature } : {}),
+        });
+      }
       const text = message.content.trim();
       if (text) {
         blocks.push({ type: "text", text });

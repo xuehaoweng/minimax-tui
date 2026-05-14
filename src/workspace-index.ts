@@ -1,8 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { loadWorkspacePolicyContext } from "./workspace-policy.js";
+import {
+  DEFAULT_IGNORED_DIRS,
+  isIgnoredWorkspaceEntry,
+  readTextFileLimitedOrEmpty,
+} from "./workspace-paths.js";
 
-const EXCLUDED_DIRS = new Set([".git", "node_modules", "dist", "coverage", ".next", ".turbo"]);
+const EXCLUDED_DIRS = DEFAULT_IGNORED_DIRS;
 const CODE_FILE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
 const INDEX_FILE_EXTENSIONS = new Set([...CODE_FILE_EXTENSIONS, ".md", ".json", ".yaml", ".yml", ".toml"]);
 
@@ -132,7 +137,7 @@ function buildTreeLines(rootDir: string, files: string[], maxLines = 40): string
 async function buildImportLines(rootDir: string, files: string[], maxLines = 30): Promise<string[]> {
   const lines: string[] = [];
   for (const file of files) {
-    const raw = await fs.readFile(file, "utf8").catch(() => "");
+    const raw = await readTextFileLimitedOrEmpty(file);
     const imports = extractImports(raw);
     if (imports.length === 0) {
       continue;
@@ -151,7 +156,7 @@ async function buildImportLines(rootDir: string, files: string[], maxLines = 30)
 async function buildSignatureLines(rootDir: string, files: string[], maxLines = 30): Promise<string[]> {
   const lines: string[] = [];
   for (const file of files) {
-    const raw = await fs.readFile(file, "utf8").catch(() => "");
+    const raw = await readTextFileLimitedOrEmpty(file);
     const signatures = extractSignatures(raw);
     if (signatures.length === 0) {
       continue;
@@ -195,7 +200,7 @@ async function buildFocusFiles(rootDir: string, files: string[], focusTerms: str
   const matches: string[] = [];
   for (const file of files) {
     const relative = path.relative(rootDir, file);
-    const raw = await fs.readFile(file, "utf8").catch(() => "");
+    const raw = await readTextFileLimitedOrEmpty(file);
     const haystack = `${relative}\n${raw}`.toLowerCase();
     if (focusTerms.some((term) => haystack.includes(term))) {
       matches.push(relative);
@@ -215,7 +220,7 @@ async function buildGrepLines(rootDir: string, files: string[], focusTerms: stri
 
   const lines: string[] = [];
   for (const file of files) {
-    const raw = await fs.readFile(file, "utf8").catch(() => "");
+    const raw = await readTextFileLimitedOrEmpty(file);
     if (!raw) {
       continue;
     }
@@ -262,7 +267,7 @@ async function walkWorkspace(rootDir: string, files: string[]): Promise<void> {
       continue;
     }
 
-    if (EXCLUDED_DIRS.has(entry.name)) {
+    if (isIgnoredWorkspaceEntry(entry.name) || EXCLUDED_DIRS.has(entry.name)) {
       continue;
     }
 

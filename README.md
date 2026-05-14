@@ -13,12 +13,18 @@ npm install -g minimax-tui
 ```bash
 minimax-tui config
 minimax-tui
+minimax-tui --resume
+minimax-tui --resume <session-id>
 ```
 
 On first launch, `minimax-tui` will open the interactive setup flow if `~/.minimax-tui/setting.json` does not yet have an API key.
 Every launch starts a new conversation session. Use `/resume` inside the TUI to open a session picker, or `/resume <session-id>` to jump directly to a saved session.
+You can also start directly into a saved session from the CLI with `minimax-tui --resume` or `minimax-tui --resume <session-id>`.
 `/mode agent` switches the chat loop into tool-using agent mode.
-In agent mode, the model can inspect files, edit files, and run non-interactive workspace commands.
+In agent mode, the model can inspect files, create new files, propose patches for existing files, apply single-file patches, and run policy-approved non-interactive workspace commands.
+Existing files are patch-first: the `write` tool returns a unified diff preview instead of overwriting, and the `apply_patch` tool applies the patch after the model explicitly requests it.
+Command execution is deny-by-default for unsupported or destructive commands.
+Press `Ctrl-C` once to arm exit, and press it again within a short window to quit.
 
 ### Config
 

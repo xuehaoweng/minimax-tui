@@ -27,7 +27,7 @@ function printHelp() {
   process.stdout.write(`minimax-tui
 
 Usage:
-  minimax-tui [--api-key KEY] [--base-url URL] [--model MODEL]
+  minimax-tui [--api-key KEY] [--base-url URL] [--model MODEL] [--resume [session-id]]
   minimax-tui config
   minimax-tui config path
   minimax-tui config list
@@ -60,6 +60,8 @@ async function main(): Promise<void> {
     printHelp();
     return;
   }
+
+  const resume = parseResumeFlag(argv);
 
   const command = argv[0];
   if (command === "config") {
@@ -112,15 +114,15 @@ async function main(): Promise<void> {
       return;
     }
 
-    await startChat(retryConfig);
+    await startChat(retryConfig, await resolveResumeSession(resume));
     return;
   }
 
-  await startChat(config);
+  await startChat(config, await resolveResumeSession(resume));
 }
 
-async function startChat(config: AppConfig) {
-  const session = await createConversationSession();
+async function startChat(config: AppConfig, initialSession?: Awaited<ReturnType<typeof resolveResumeSession>>) {
+  const session = initialSession ?? (await createConversationSession());
   render(
     React.createElement(App, {
       config,
@@ -132,6 +134,46 @@ async function startChat(config: AppConfig) {
     }),
     { exitOnCtrlC: false },
   );
+}
+
+function parseResumeFlag(argv: string[]): string | null {
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!token.startsWith("--resume")) {
+      continue;
+    }
+
+    const [, inlineValue] = token.split("=", 2);
+    if (inlineValue !== undefined) {
+      return inlineValue.trim() || "";
+    }
+
+    const next = argv[index + 1];
+    if (next && !next.startsWith("--")) {
+      return next.trim() || "";
+    }
+
+    return "";
+  }
+
+  return null;
+}
+
+async function resolveResumeSession(resume: string | null): Promise<Awaited<ReturnType<typeof loadConversationSession>> | undefined> {
+  if (resume === null) {
+    return undefined;
+  }
+
+  const session = await loadConversationSession(resume || undefined);
+  if (session) {
+    return session;
+  }
+
+  if (resume) {
+    throw new Error(`Session not found: ${resume}`);
+  }
+
+  return undefined;
 }
 
 async function handleConfigCommand(args: string[]): Promise<void> {

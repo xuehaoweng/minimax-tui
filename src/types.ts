@@ -7,6 +7,8 @@ export interface ChatMessage {
   name?: string;
   toolCallId?: string;
   toolCalls?: ToolCall[];
+  reasoningContent?: string;
+  reasoningSignature?: string;
 }
 
 export interface ToolCall {

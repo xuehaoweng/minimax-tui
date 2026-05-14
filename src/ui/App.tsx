@@ -44,6 +44,19 @@ import type {
   WorkspaceIndexContext,
   WorkspacePolicyContext,
 } from "../types.js";
+import {
+  calculateViewport,
+  isBackspaceInput,
+  normalizeBaseUrl,
+  parseMode,
+  removeLastGrapheme,
+  renderDraft,
+  sanitizeDisplayText,
+  sanitizeDraftInput,
+  sanitizeMessages,
+  shouldUseAgentForWorkspaceTask,
+  stripThinkBlocks,
+} from "./app-utils.js";
 
 interface AppProps {
   config: AppConfig;
@@ -75,6 +88,17 @@ interface SubagentTaskRecord {
   finalText: string;
   status: string;
 }
+
+const UI_THEME = {
+  border: "gray",
+  accent: "cyanBright",
+  accentSoft: "cyan",
+  text: "white",
+  muted: "gray",
+  success: "greenBright",
+  warning: "yellowBright",
+  danger: "red",
+} as const;
 
 export function App({ config, initialSession, onConfigChange }: AppProps) {
   const { exit } = useApp();
@@ -133,6 +157,8 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
   });
   const assistantIndex = useRef<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const exitArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isExitArmed, setIsExitArmed] = useState(false);
   const sanitizedMessages = useMemo(() => sanitizeMessages(messages), [messages]);
   const activeSkillNames = useMemo(() => activeSession.activeSkills ?? [], [activeSession.activeSkills]);
   const activePluginNames = useMemo(() => activeSession.activePlugins ?? [], [activeSession.activePlugins]);
@@ -355,10 +381,17 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
         abortRef.current?.abort();
         setThinking("");
         setStatus("Interrupted");
-        setNotice("Generation interrupted (Ctrl+C).");
+        armExitPrompt();
+        setNotice("Generation interrupted. Press Ctrl-C again to exit.");
         return;
       }
-      exit();
+      if (isExitArmed) {
+        exitArmTimer.current && clearTimeout(exitArmTimer.current);
+        exitArmTimer.current = null;
+        exit();
+        return;
+      }
+      armExitPrompt();
       return;
     }
 
@@ -657,6 +690,25 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       }
     }
   });
+
+  useEffect(() => {
+    if (!isExitArmed) {
+      return;
+    }
+
+    exitArmTimer.current && clearTimeout(exitArmTimer.current);
+    exitArmTimer.current = setTimeout(() => {
+      setIsExitArmed(false);
+      exitArmTimer.current = null;
+    }, 2000);
+
+    return () => {
+      if (exitArmTimer.current) {
+        clearTimeout(exitArmTimer.current);
+        exitArmTimer.current = null;
+      }
+    };
+  }, [isExitArmed]);
 
   useEffect(() => {
     setRuntimeConfig(config);
@@ -997,6 +1049,19 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
           },
           (token) => {
             setThinking((current) => `${current}${token}`);
+            setMessages((current) => {
+              const index = assistantIndex.current;
+              if (index === null || !current[index]) {
+                return current;
+              }
+
+              const next = [...current];
+              next[index] = {
+                ...next[index],
+                reasoningContent: `${next[index].reasoningContent ?? ""}${token}`,
+              };
+              return next;
+            });
           },
           controller.signal,
         );
@@ -1689,6 +1754,12 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
     setNotice("Mode updated and saved to setting.json");
   }
 
+  function armExitPrompt(): void {
+    setIsExitArmed(true);
+    setStatus("Press Ctrl-C again to exit");
+    setNotice(`Resume this session with: minimax-tui --resume ${activeSession.id}`);
+  }
+
   function scrollMessages(direction: -1 | 1, usePage = false): void {
     const step = usePage ? Math.max(1, viewport.pageSize - 1) : Math.max(1, Math.floor(viewport.pageSize / 2));
     const maxOffset = Math.max(0, sanitizedMessages.length - viewport.pageSize);
@@ -1821,6 +1892,7 @@ export function App({ config, initialSession, onConfigChange }: AppProps) {
       `Model: ${runtimeConfig.model}`,
       `Base URL: ${runtimeConfig.baseUrl}`,
       `Session: ${sessionTitle} (${activeSession.id})`,
+      `Resume: minimax-tui --resume ${activeSession.id}`,
       `Policy: ${workspacePolicy.sourcePath ?? "MINIMAX.md missing"}`,
       `Index: ${workspaceIndex.fileCount} files / ${workspaceIndex.codeFileCount} code files`,
       `Status: ${status}`,
@@ -2012,181 +2084,126 @@ function pathBasename(value: string): string {
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      
-
-      {isWelcomeView ? (
-      <Box marginBottom={1} borderStyle="double" borderColor="cyan">
-        <Box width={24} flexDirection="column" paddingX={1} paddingY={0}>
-          <Text color="cyanBright" bold>
-            ╭──────────╮
-          </Text>
-          <Text>
-            <Text color="cyanBright" bold>│ </Text>
-            <Text color="yellowBright" bold>MINIMAX</Text>
-            <Text color="cyanBright" bold> │</Text>
-          </Text>
-          <Text>
-            <Text color="cyanBright" bold>│ </Text>
-            <Text color="magentaBright" bold>T</Text>
-            <Text color="cyanBright" bold> U </Text>
-            <Text color="magentaBright" bold>I</Text>
-            <Text color="cyanBright" bold> │</Text>
-          </Text>
-          <Text color="cyanBright" bold>
-            │  ░ ░ ░   │
-          </Text>
-          <Text color="cyanBright" bold>
-            ╰──────────╯
-          </Text>
-          <Text color="yellowBright" bold>
+      <Box marginBottom={1} borderStyle="single" borderColor={UI_THEME.border} paddingX={1} paddingY={0}>
+        <Box flexDirection="column" width={28}>
+          <Text color={UI_THEME.accent} bold>
             minimax-tui
           </Text>
-          <Text color="greenBright">
-            workspace agent
+          <Text dimColor>
+            {pathBasename(process.cwd())} · {activeSession.id.slice(0, 8)}
+          </Text>
+          <Text dimColor>
+            {launchTime}
           </Text>
         </Box>
-        <Box flexGrow={1} flexDirection="column" paddingX={1} paddingY={0}>
-          <Text color="cyanBright" bold>
-            ╭──────── Workspace Snapshot ────────╮
+        <Box flexGrow={1} flexDirection="column">
+          <Text color={UI_THEME.text} bold>
+            {sessionTitle}
           </Text>
-          <Text>
-            <Text color="magentaBright" bold>Started</Text>
-            <Text color="white"> {launchTime}</Text>
+          <Text dimColor>
+            mode {runtimeConfig.mode} · model {runtimeConfig.model}
           </Text>
-          <Text>
-            <Text color="magentaBright" bold>Workspace</Text>
-            <Text color="white"> {pathBasename(process.cwd())}</Text>
-          </Text>
-          <Text>
-            <Text color="magentaBright" bold>Session</Text>
-            <Text color="white"> {sessionTitle}</Text>
-            <Text color="cyanBright"> · </Text>
-            <Text color="white">{activeSession.id.slice(0, 8)}</Text>
-          </Text>
-          <Text>
-            <Text color="magentaBright" bold>Mode</Text>
-            <Text color="white"> {runtimeConfig.mode}</Text>
-            <Text color="cyanBright"> · </Text>
-            <Text color="magentaBright" bold>Model</Text>
-            <Text color="white"> {runtimeConfig.model}</Text>
-          </Text>
-          <Text>
-            <Text color="magentaBright" bold>State</Text>
-            <Text color="white"> {messages.length} msgs</Text>
-            <Text color="cyanBright"> · </Text>
-            <Text color="white">{status}</Text>
-          </Text>
-          <Text>
-            <Text color="magentaBright" bold>Skills</Text>
-            <Text color="white"> {activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ")}</Text>
-          </Text>
-          <Text>
-            <Text color="magentaBright" bold>Plugins</Text>
-            <Text color="white"> {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}</Text>
-          </Text>
-          <Text color="cyanBright">
-            ╰──────────────────────────────────╯
+          <Text dimColor>
+            {status}
           </Text>
         </Box>
-        <Box width={40} flexDirection="column" paddingX={1} paddingY={0}>
-          <Text color="yellowBright" bold>
-            Tips
+        <Box flexDirection="column" width={34}>
+          <Text color={UI_THEME.muted}>
+            skills {activeSkillNames.length === 0 ? "none" : activeSkillNames.join(", ")}
           </Text>
-          <Text>
-            <Text color="cyanBright">/status</Text>
-            <Text color="yellow">, </Text>
-            <Text color="cyanBright">/tasks</Text>
-            <Text color="yellow">, </Text>
-            <Text color="cyanBright">/resume</Text>
-            <Text color="yellow">, </Text>
-            <Text color="cyanBright">/skill</Text>
-            <Text color="yellow"> list, </Text>
-            <Text color="magentaBright">/plugin</Text>
-            <Text color="yellow"> list, </Text>
-            <Text color="greenBright">/init</Text>
+          <Text color={UI_THEME.muted}>
+            plugins {activePluginNames.length === 0 ? "none" : activePluginNames.join(", ")}
           </Text>
-          <Text>
-            <Text color="cyanBright">/skill</Text>
-            <Text color="yellow"> install </Text>
-            <Text color="white">{"<path-or-github-url>"}</Text>
-          </Text>
-          <Text>
-            <Text color="magentaBright">/plugin</Text>
-            <Text color="yellow"> install </Text>
-            <Text color="white">{"<path-or-github-url>"}</Text>
-          </Text>
-          <Text>
-            <Text color="cyanBright">git</Text>
-            <Text color="yellow"> status/diff/log/add/commit</Text>
-          </Text>
-          <Text>
-            <Text color="cyanBright">web</Text>
-            <Text color="yellow"> search/fetch</Text>
-          </Text>
-          <Text>
-            <Text color="cyanBright">subagent</Text>
-            <Text color="yellow"> spawn_subagent</Text>
-          </Text>
-          <Text color="greenBright">
-            Ctrl+C/Esc interrupt | Ctrl+L clear | Ctrl+U clear input
-          </Text>
-          <Text color="magentaBright" bold>
-            Policy
-          </Text>
-          <Text color="magentaBright">
+          <Text color={UI_THEME.muted}>
             {workspacePolicy.sourcePath ? pathBasename(workspacePolicy.sourcePath) : "MINIMAX.md missing"}
           </Text>
-          <Text color="magentaBright">
-            Hooks: {workspacePolicy.hookFiles.length === 0 ? "none" : `${workspacePolicy.hookFiles.length} file(s)`}
-          </Text>
-          <Text color="greenBright" bold>
-            Index
-          </Text>
-            <Text color="greenBright">{workspaceIndexSummary}</Text>
-          <Text color="greenBright" bold>
-            Subagents
-          </Text>
-          <Text color="greenBright">{formatSubagentTasks(subagentTasks)}</Text>
-          <Text color="greenBright" bold>
-            Recent activity
-          </Text>
-          <Text color="greenBright">{recentActivity}</Text>
         </Box>
       </Box>
+
+      {isWelcomeView ? (
+        <Box marginBottom={1} borderStyle="single" borderColor={UI_THEME.border} paddingX={1} paddingY={0}>
+          <Box flexDirection="column" width={30} marginRight={1}>
+            <Text color={UI_THEME.accent} bold>
+              Workspace Brief
+            </Text>
+            <Text color={UI_THEME.text}>
+              Claude Code style: dense, calm, and work-first.
+            </Text>
+            <Text dimColor>
+              Session {activeSession.id.slice(0, 8)} · {messages.length} msgs
+            </Text>
+            <Text dimColor>
+              Policy {workspacePolicy.sourcePath ? "loaded" : "missing"} · Index {workspaceIndex.fileCount}/{workspaceIndex.codeFileCount}
+            </Text>
+          </Box>
+          <Box flexGrow={1} flexDirection="column" marginRight={1}>
+            <Text color={UI_THEME.accentSoft} bold>
+              What this screen does
+            </Text>
+            <Text dimColor wrap="wrap">
+              Chat on the left, actions in slash commands, and workspace operations behind the agent mode. Keep the prompt short, let tools do the work.
+            </Text>
+            <Text dimColor>
+              Recent: {recentActivity}
+            </Text>
+            <Text dimColor>
+              Index: {workspaceIndexSummary.replace(/\n/g, " · ")}
+            </Text>
+          </Box>
+          <Box flexDirection="column" width={34}>
+            <Text color={UI_THEME.warning} bold>
+              Shortcuts
+            </Text>
+            <Text dimColor>
+              Ctrl+K palette · Ctrl+T tasks · Ctrl+R restore
+            </Text>
+            <Text dimColor>
+              Ctrl+C/Esc interrupt · Ctrl+L clear · Ctrl+D exit
+            </Text>
+            <Text dimColor>
+              /mode /model /baseurl /skill /plugin /search
+            </Text>
+            <Text dimColor>
+              /status /sessions /resume /init /memory /compact
+            </Text>
+          </Box>
+        </Box>
       ) : null}
 
       {notice && isWelcomeView ? (
-        <Box marginBottom={1}>
-          <Text color="blueBright">{notice}</Text>
+        <Box marginBottom={1} borderStyle="single" borderColor={UI_THEME.border} paddingX={1} paddingY={0}>
+          <Text color={UI_THEME.accent}>{notice}</Text>
         </Box>
       ) : null}
 
       {error ? (
-        <Box marginBottom={1}>
-          <Text color="red">Error: {error}</Text>
+        <Box marginBottom={1} borderStyle="single" borderColor={UI_THEME.danger} paddingX={1} paddingY={0}>
+          <Text color={UI_THEME.danger} bold>
+            Error: {error}
+          </Text>
         </Box>
       ) : null}
 
       {thinking.trim() ? (
-        <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor="yellow">
+        <Box flexDirection="column" marginBottom={1} borderStyle="single" borderColor={UI_THEME.border}>
           <Box paddingX={1} flexDirection="column">
-            <Text color="yellowBright" bold>
+            <Text color={UI_THEME.accent} bold>
               Thinking {thinkingCollapsed ? "(collapsed)" : "(expanded)"} {isSending ? "" : "• Ctrl+Y to expand"}
             </Text>
-            {!thinkingCollapsed ? <Text color="gray">⎿ {sanitizeDisplayText(thinking)}</Text> : null}
-            {isSending ? <Text color="yellow">* Simmering... (thinking)</Text> : null}
+            {!thinkingCollapsed ? <Text color={UI_THEME.muted}>⎿ {sanitizeDisplayText(thinking)}</Text> : null}
+            {isSending ? <Text color={UI_THEME.warning}>* Simmering... (thinking)</Text> : null}
           </Box>
         </Box>
       ) : null}
 
       <Box flexDirection="column" marginBottom={1}>
-        <Text dimColor>
+        <Text color={UI_THEME.muted}>
           Follow: {isPinnedToBottom ? "on" : "off"} | Pinned: {isPinnedToBottom ? "bottom" : "free"} | View:{" "}
           {visibleMessages.items.length === 0
             ? "0-0"
             : `${visibleMessages.start + 1}-${visibleMessages.end}`} / {visibleMessages.total}
         </Text>
-        <Text dimColor>
+        <Text color={UI_THEME.muted}>
           {visibleMessages.end < visibleMessages.total
             ? "More below"
             : isPinnedToBottom
@@ -2198,49 +2215,52 @@ function pathBasename(value: string): string {
       <Box flexDirection="column" marginBottom={1}>
         {visibleMessages.items.map((message, index) => {
           const isAssistant = message.role === "assistant";
-          const label = isAssistant ? "assistant" : "you";
           const bodyText = sanitizeDisplayText(message.content) || (isAssistant && isSending ? ".".repeat(Math.max(3, loadingTick + 1)) : "");
           return (
-            <Box key={`${label}-${visibleMessages.start + index}`} flexDirection="column">
-              <Text color={isAssistant ? "green" : "yellow"} bold>
-                {label}
+            <Box
+              key={`${isAssistant ? "assistant" : "you"}-${visibleMessages.start + index}`}
+              flexDirection="column"
+              marginBottom={1}
+              borderStyle="single"
+              borderColor={isAssistant ? UI_THEME.border : UI_THEME.accentSoft}
+              paddingX={1}
+              paddingY={0}
+            >
+              <Text color={isAssistant ? UI_THEME.accent : UI_THEME.warning} bold>
+                {isAssistant ? "assistant" : "you"}
               </Text>
-              {isAssistant ? (
-                <Text wrap="wrap">{bodyText}</Text>
-              ) : (
-                <Text wrap="wrap" backgroundColor="black">
-                  {bodyText}
-                </Text>
-              )}
+              <Text wrap="wrap" color={UI_THEME.text}>
+                {bodyText}
+              </Text>
             </Box>
           );
         })}
       </Box>
 
       <Box flexDirection="column">
-        <Text color="magenta" bold>
+        <Text color={UI_THEME.accent} bold>
           prompt
         </Text>
-        <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} paddingY={0}>
+        <Box flexDirection="column" borderStyle="single" borderColor={UI_THEME.border} paddingX={1} paddingY={0}>
           {renderDraft(draft, stdout.columns ?? 80)}
         </Box>
-        <Text dimColor>
+        <Text color={UI_THEME.muted}>
           PgUp/PgDn or Up/Down to scroll history. Ctrl+C/Esc interrupt. Ctrl+K palette. Ctrl+T tasks. Ctrl+D exits on empty prompt.
         </Text>
         {isSending ? (
-          <Text color="cyanBright">Generating{".".repeat(Math.max(3, loadingTick + 1))}</Text>
+          <Text color={UI_THEME.accent}>Generating{".".repeat(Math.max(3, loadingTick + 1))}</Text>
         ) : null}
       </Box>
 
       {isTaskPanelOpen ? (
-        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="green">
+        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={UI_THEME.border}>
           <Box paddingX={1}>
-            <Text color="greenBright" bold>
+            <Text color={UI_THEME.accent} bold>
               Task Queue
             </Text>
           </Box>
           <Box paddingX={1}>
-            <Text dimColor>
+            <Text color={UI_THEME.muted}>
               {subagentTasks.length === 0
                 ? "No subagent tasks yet."
                 : `${subagentTasks.length} task(s) | Up/Down to browse | Enter for detail | Esc to close`}
@@ -2256,8 +2276,8 @@ function pathBasename(value: string): string {
                   return (
                     <Text
                       key={task.id}
-                      color={selected ? "black" : task.status === "done" ? "greenBright" : "yellowBright"}
-                      backgroundColor={selected ? "green" : undefined}
+                      color={selected ? "black" : task.status === "done" ? UI_THEME.success : UI_THEME.warning}
+                      backgroundColor={selected ? UI_THEME.accent : undefined}
                       bold={selected}
                     >
                       {selected ? ">" : " "} {index + 1}. {summarizeLine(task.goal, 24)}
@@ -2269,33 +2289,33 @@ function pathBasename(value: string): string {
             <Box flexGrow={1} flexDirection="column">
               {selectedSubagentTask ? (
                 <>
-                  <Text color="white" bold>
+                  <Text color={UI_THEME.text} bold>
                     Goal
                   </Text>
-                  <Text color="white" wrap="wrap">
+                  <Text color={UI_THEME.text} wrap="wrap">
                     {selectedSubagentTask.goal}
                   </Text>
-                  <Text color="white" bold>
+                  <Text color={UI_THEME.text} bold>
                     Plan
                   </Text>
-                  <Text color="white" wrap="wrap">
+                  <Text color={UI_THEME.text} wrap="wrap">
                     {selectedSubagentTask.plan || "(no plan)"}
                   </Text>
-                  <Text color="white" bold>
+                  <Text color={UI_THEME.text} bold>
                     Execution
                   </Text>
-                  <Text color="white" wrap="wrap">
+                  <Text color={UI_THEME.text} wrap="wrap">
                     {selectedSubagentTask.execution || "(no execution)"}
                   </Text>
-                  <Text color="white" bold>
+                  <Text color={UI_THEME.text} bold>
                     Report
                   </Text>
-                  <Text color="white" wrap="wrap">
+                  <Text color={UI_THEME.text} wrap="wrap">
                     {selectedSubagentTask.report || "(no report)"}
                   </Text>
                 </>
               ) : (
-                <Text dimColor>Select a task to inspect.</Text>
+                <Text color={UI_THEME.muted}>Select a task to inspect.</Text>
               )}
             </Box>
           </Box>
@@ -2303,14 +2323,14 @@ function pathBasename(value: string): string {
       ) : null}
 
       {isSlashPickerOpen ? (
-        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="cyan">
+        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={UI_THEME.border}>
           <Box paddingX={1}>
-            <Text color="cyanBright" bold>
+            <Text color={UI_THEME.accent} bold>
               Slash Commands
             </Text>
           </Box>
           <Box paddingX={1}>
-            <Text dimColor>
+            <Text color={UI_THEME.muted}>
               {filteredSlashCommands.length === 0
                 ? "No matching commands."
                 : `${filteredSlashCommands.length} command(s) available`}
@@ -2318,7 +2338,7 @@ function pathBasename(value: string): string {
           </Box>
           {filteredSlashCommands.length === 0 ? (
             <Box paddingX={1} paddingBottom={1}>
-              <Text dimColor>Try typing more of a command name.</Text>
+              <Text color={UI_THEME.muted}>Try typing more of a command name.</Text>
             </Box>
           ) : (
             filteredSlashCommands.map((command, index) => {
@@ -2326,13 +2346,13 @@ function pathBasename(value: string): string {
               return (
                 <Box key={command.name} paddingX={1}>
                   <Text
-                    color={selected ? "black" : "cyanBright"}
-                    backgroundColor={selected ? "cyan" : undefined}
+                    color={selected ? "black" : UI_THEME.accent}
+                    backgroundColor={selected ? UI_THEME.accentSoft : undefined}
                     bold={selected}
                   >
                     {selected ? ">" : " "} /{command.name}
                   </Text>
-                  <Text dimColor>
+                  <Text color={UI_THEME.muted}>
                     {" "}
                     {command.description}
                   </Text>
@@ -2341,7 +2361,7 @@ function pathBasename(value: string): string {
             })
           )}
           <Box paddingX={1} paddingBottom={1}>
-            <Text dimColor>
+            <Text color={UI_THEME.muted}>
               Up/Down to choose, Enter to insert, Esc to cancel.
             </Text>
           </Box>
@@ -2349,20 +2369,20 @@ function pathBasename(value: string): string {
       ) : null}
 
       {isSessionPickerOpen ? (
-        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor="yellow">
+        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={UI_THEME.border}>
           <Box paddingX={1}>
-            <Text color="yellowBright" bold>
+            <Text color={UI_THEME.accent} bold>
               Resume Session
             </Text>
           </Box>
           <Box paddingX={1}>
-            <Text dimColor>
+            <Text color={UI_THEME.muted}>
               {sessionPickerLoading ? "Loading sessions..." : `${sessionSummaries.length} saved session(s)`}
             </Text>
           </Box>
           {sessionSummaries.length === 0 ? (
             <Box paddingX={1} paddingBottom={1}>
-              <Text dimColor>No saved sessions yet.</Text>
+              <Text color={UI_THEME.muted}>No saved sessions yet.</Text>
             </Box>
           ) : (
             sessionSummaries.slice(0, 8).map((session, index) => {
@@ -2370,13 +2390,13 @@ function pathBasename(value: string): string {
               return (
                 <Box key={session.id} paddingX={1}>
                   <Text
-                    color={selected ? "black" : "yellowBright"}
-                    backgroundColor={selected ? "yellow" : undefined}
+                    color={selected ? "black" : UI_THEME.accent}
+                    backgroundColor={selected ? UI_THEME.warning : undefined}
                     bold={selected}
                   >
                     {selected ? ">" : " "} /resume {session.id.slice(0, 8)}
                   </Text>
-                  <Text dimColor>
+                  <Text color={UI_THEME.muted}>
                     {" "}
                     {session.title} | {session.messageCount} msgs | {session.updatedAt}
                   </Text>
@@ -2385,7 +2405,7 @@ function pathBasename(value: string): string {
             })
           )}
           <Box paddingX={1} paddingBottom={1}>
-            <Text dimColor>
+            <Text color={UI_THEME.muted}>
               Up/Down to choose, Enter to resume, Esc to cancel.
             </Text>
           </Box>
@@ -2393,9 +2413,9 @@ function pathBasename(value: string): string {
       ) : null}
 
       {isPaletteOpen ? (
-        <Box flexDirection="column" marginTop={1} borderStyle="double" borderColor="cyan">
+        <Box flexDirection="column" marginTop={1} borderStyle="single" borderColor={UI_THEME.border}>
           <Box paddingX={1}>
-            <Text color="cyanBright" bold>
+            <Text color={UI_THEME.accent} bold>
               Command Palette
             </Text>
           </Box>
@@ -2405,8 +2425,8 @@ function pathBasename(value: string): string {
               return (
                 <Text
                   key={group}
-                  color={active ? "black" : "cyanBright"}
-                  backgroundColor={active ? "cyan" : undefined}
+                  color={active ? "black" : UI_THEME.accent}
+                  backgroundColor={active ? UI_THEME.accentSoft : undefined}
                   bold={active}
                 >
                   {active ? `[${group}]` : ` ${group} `}
@@ -2415,11 +2435,11 @@ function pathBasename(value: string): string {
             })}
           </Box>
           <Box paddingX={1} paddingBottom={1}>
-            <Text color="yellow">Search: {paletteQuery || "all"}</Text>
+            <Text color={UI_THEME.warning}>Search: {paletteQuery || "all"}</Text>
           </Box>
           {renderPaletteGroups(filteredPaletteActions, paletteIndex)}
           <Box paddingX={1} paddingBottom={1}>
-            <Text dimColor>
+            <Text color={UI_THEME.muted}>
               Type to filter, Tab to switch groups, Up/Down to move, Enter to run, Esc to close, Ctrl+K to toggle.
             </Text>
           </Box>
@@ -2427,123 +2447,6 @@ function pathBasename(value: string): string {
       ) : null}
     </Box>
   );
-}
-
-interface ViewportArgs {
-  rows: number;
-  draft: string;
-  paletteOpen: boolean;
-  slashPickerOpen: boolean;
-  sessionPickerOpen: boolean;
-  taskPanelOpen: boolean;
-}
-
-function calculateViewport({
-  rows,
-  draft,
-  paletteOpen,
-  slashPickerOpen,
-  sessionPickerOpen,
-  taskPanelOpen,
-}: ViewportArgs): { pageSize: number } {
-  const draftLines = Math.max(1, draft.split("\n").length);
-  const baseChrome = 20;
-  const paletteChrome = paletteOpen ? 9 : 0;
-  const slashPickerChrome = slashPickerOpen ? 8 : 0;
-  const sessionPickerChrome = sessionPickerOpen ? 8 : 0;
-  const taskPanelChrome = taskPanelOpen ? 15 : 0;
-  const available = rows - baseChrome - paletteChrome - slashPickerChrome - sessionPickerChrome - taskPanelChrome - draftLines;
-  return {
-    pageSize: Math.max(3, Math.floor(available / 2)),
-  };
-}
-
-function sanitizeMessages(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map((message) => ({
-    ...message,
-    content:
-      message.role === "assistant"
-        ? sanitizeDisplayText(stripThinkBlocks(message.content))
-        : sanitizeDisplayText(message.content),
-  }));
-}
-
-function sanitizeDisplayText(text: string): string {
-  return text.replace(/\uFFFD/g, "");
-}
-
-function isBackspaceInput(input: string, key: { backspace: boolean; delete: boolean }): boolean {
-  return key.backspace || key.delete || input === "\u0008" || input === "\u007f";
-}
-
-function sanitizeDraftInput(input: string): string {
-  return Array.from(input)
-    .filter((character) => {
-      const codePoint = character.codePointAt(0) ?? 0;
-      if (character === "\n" || character === "\t") {
-        return true;
-      }
-      if (codePoint < 0x20 || codePoint === 0x7f) {
-        return false;
-      }
-      if (codePoint === 0xfffd) {
-        return false;
-      }
-      if (codePoint >= 0x2500 && codePoint <= 0x257f) {
-        return false;
-      }
-      return true;
-    })
-    .join("")
-    .replace(/\r\n/g, "\n");
-}
-
-function removeLastGrapheme(text: string): string {
-  if (text.length === 0) {
-    return text;
-  }
-
-  if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
-    const segmenter = new Intl.Segmenter("zh-Hans", { granularity: "grapheme" });
-    const segments = Array.from(segmenter.segment(text));
-    segments.pop();
-    return segments.map((segment) => segment.segment).join("");
-  }
-
-  return Array.from(text).slice(0, -1).join("");
-}
-
-function stripThinkBlocks(text: string): string {
-  const openTag = "<think>";
-  const closeTag = "</think>";
-  let index = 0;
-  let insideThink = false;
-  let output = "";
-
-  while (index < text.length) {
-    if (!insideThink) {
-      const nextOpen = text.indexOf(openTag, index);
-      if (nextOpen === -1) {
-        output += text.slice(index);
-        break;
-      }
-
-      output += text.slice(index, nextOpen);
-      index = nextOpen + openTag.length;
-      insideThink = true;
-      continue;
-    }
-
-    const nextClose = text.indexOf(closeTag, index);
-    if (nextClose === -1) {
-      break;
-    }
-
-    index = nextClose + closeTag.length;
-    insideThink = false;
-  }
-
-  return output.replace(/<\/?think>/gi, "").trimEnd();
 }
 
 function composeSystemPrompt(
@@ -2601,120 +2504,6 @@ function getModePrompt(mode: AppConfig["mode"]): string {
     default:
       return "Mode: chat. Provide direct conversational answers.";
   }
-}
-
-function parseMode(value: string): AppConfig["mode"] | null {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "chat" || normalized === "plan" || normalized === "agent") {
-    return normalized;
-  }
-  return null;
-}
-
-function shouldUseAgentForWorkspaceTask(input: string): boolean {
-  const text = input.toLowerCase().trim();
-  if (!text) {
-    return false;
-  }
-
-  const workspaceIntentPatterns = [
-    /创建.*文件/,
-    /新建.*文件/,
-    /写入.*文件/,
-    /修改.*文件/,
-    /编辑.*文件/,
-    /更新.*文件/,
-    /在当前目录.*(创建|新建|写入|修改|编辑)/,
-    /\bcreate\b.*\bfile\b/,
-    /\bnew\b.*\bfile\b/,
-    /\bwrite\b.*\bfile\b/,
-    /\bmodify\b.*\bfile\b/,
-    /\bedit\b.*\bfile\b/,
-    /\bupdate\b.*\bfile\b/,
-  ];
-
-  return workspaceIntentPatterns.some((pattern) => pattern.test(text));
-}
-
-
-function normalizeBaseUrl(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function renderDraft(draft: string, columns: number): React.ReactNode {
-  const cleanDraft = sanitizeDraftInput(draft);
-  const innerWidth = Math.max(1, columns - 6);
-  const lines = cleanDraft.length > 0 ? cleanDraft.split("\n") : [""];
-  return lines.map((line, index) => (
-    <Text key={`${index}-${line}`} wrap="truncate-end">
-      {padDraftLine(index === lines.length - 1 ? `${line}█` : line, innerWidth)}
-    </Text>
-  ));
-}
-
-function padDraftLine(text: string, width: number): string {
-  const clipped = sliceDraftLine(text, width);
-  const padding = Math.max(0, width - measureDraftWidth(clipped));
-  return `${clipped}${" ".repeat(padding)}`;
-}
-
-function sliceDraftLine(text: string, width: number): string {
-  if (width <= 0) {
-    return "";
-  }
-
-  let visibleWidth = 0;
-  let output = "";
-  for (const character of Array.from(text)) {
-    const characterWidth = measureCharacterWidth(character);
-    if (visibleWidth + characterWidth > width) {
-      break;
-    }
-    visibleWidth += characterWidth;
-    output += character;
-  }
-
-  return output;
-}
-
-function measureDraftWidth(text: string): number {
-  let width = 0;
-  for (const character of Array.from(text)) {
-    width += measureCharacterWidth(character);
-  }
-  return width;
-}
-
-function measureCharacterWidth(character: string): number {
-  const codePoint = character.codePointAt(0) ?? 0;
-  if (codePoint === 0) {
-    return 0;
-  }
-
-  if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
-    return 0;
-  }
-
-  if (
-    codePoint >= 0x1100 &&
-    (codePoint <= 0x115f ||
-      codePoint === 0x2329 ||
-      codePoint === 0x232a ||
-      (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
-      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
-      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
-      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-      (codePoint >= 0x1f300 && codePoint <= 0x1f64f) ||
-      (codePoint >= 0x1f900 && codePoint <= 0x1f9ff) ||
-      (codePoint >= 0x20000 && codePoint <= 0x3fffd))
-  ) {
-    return 2;
-  }
-
-  return 1;
 }
 
 function renderPaletteGroups(actions: PaletteAction[], selectedIndex: number): React.ReactNode {
